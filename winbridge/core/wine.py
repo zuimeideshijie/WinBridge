@@ -2,9 +2,30 @@
 
 import os
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
+
+
+# CJK font candidates on the host (in priority order).
+# These get symlinked into each bottle's drive_c/windows/Fonts/ so that
+# Wine applications can render Chinese/Japanese/Korean characters.
+_HOST_CJK_FONTS = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+]
+
+# Core Latin fonts from the host that Wine apps commonly expect.
+_HOST_CORE_FONTS = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuMono.ttf",
+]
 
 
 class Wine:
@@ -144,6 +165,65 @@ class Wine:
             return result.returncode == 0
         except subprocess.TimeoutExpired:
             return False
+        except Exception:
+            return False
+
+    def inject_fonts(self, bottle_path: str) -> int:
+        """Symlink host CJK + core Latin fonts into the bottle.
+
+        Wine applications often render Chinese/Japanese/Korean characters
+        as boxes (tofu) because a fresh prefix only ships a single Latin
+        fallback font. Linking the host Noto CJK / WenQuanYi fonts into
+        drive_c/windows/Fonts/ makes them visible to Wine.
+
+        Returns the number of fonts successfully linked.
+        """
+        fonts_dir = Path(bottle_path) / "drive_c" / "windows" / "Fonts"
+        fonts_dir.mkdir(parents=True, exist_ok=True)
+
+        linked = 0
+        for host_font in _HOST_CJK_FONTS + _HOST_CORE_FONTS:
+            src = Path(host_font)
+            if not src.exists():
+                continue
+            dst = fonts_dir / src.name
+            if dst.exists() or dst.is_symlink():
+                linked += 1
+                continue
+            try:
+                os.symlink(str(src), str(dst))
+                linked += 1
+            except OSError:
+                # symlinks may be unsupported on some filesystems; copy instead
+                try:
+                    shutil.copy2(str(src), str(dst))
+                    linked += 1
+                except OSError:
+                    pass
+        return linked
+
+    def register_font(self, bottle_path: str,
+                      font_name: str, file_name: str) -> bool:
+        """Register a font file in the Wine registry (HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts).
+
+        This makes the linked font visible to GDI-based applications that
+        enumerate installed fonts through the registry rather than the
+        filesystem.
+        """
+        env = os.environ.copy()
+        env["WINEPREFIX"] = bottle_path
+        env["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d"
+        try:
+            result = subprocess.run(
+                [self.wine_path, "reg", "add",
+                 "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts",
+                 "/v", f"{font_name} (TrueType)",
+                 "/t", "REG_SZ",
+                 "/d", file_name,
+                 "/f"],
+                env=env, capture_output=True, text=True, timeout=30
+            )
+            return result.returncode == 0
         except Exception:
             return False
 

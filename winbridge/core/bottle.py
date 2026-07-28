@@ -256,6 +256,10 @@ class BottleManager:
         if not success:
             return None
 
+        # Inject host CJK + core Latin fonts so Wine apps can render
+        # Chinese/Japanese/Korean characters instead of tofu boxes.
+        wine.inject_fonts(str(bottle_path))
+
         # Create bottle metadata
         bottle = Bottle(str(bottle_path), name=name, config=self.config)
         bottle._meta["arch"] = arch

@@ -21,8 +21,9 @@ COMPONENT_MAP = {
         "description": "Microsoft Visual C++ 2015-2019 Redistributable",
         "verb": "vcrun2019",
         "gitcode": {
-            "url": "https://gitcode.com/gh_mirrors/vc/vcredist/-/releases/download/v0.105.0/VisualCppRedist_AIO_x86_x64.exe",
+            "repo": "https://gitcode.com/gh_mirrors/vc/vcredist.git",
             "version": "0.105.0",
+            "file": "VisualCppRedist_AIO_x86_x64.exe",
             "install_args": "/ai9 /quiet /norestart",
         },
     },
@@ -31,8 +32,9 @@ COMPONENT_MAP = {
         "description": "Microsoft Visual C++ 2022 Redistributable",
         "verb": "vcrun2022",
         "gitcode": {
-            "url": "https://gitcode.com/gh_mirrors/vc/vcredist/-/releases/download/v0.105.0/VisualCppRedist_AIO_x86_x64.exe",
+            "repo": "https://gitcode.com/gh_mirrors/vc/vcredist.git",
             "version": "0.105.0",
+            "file": "VisualCppRedist_AIO_x86_x64.exe",
             "install_args": "/ai9 /quiet /norestart",
         },
     },
@@ -41,7 +43,7 @@ COMPONENT_MAP = {
         "description": "Microsoft .NET Framework 4.8",
         "verb": "dotnet48",
         "gitcode": {
-            "url": "https://gitcode.com/open-source-toolkit/769c4/releases/download/v1.0.0/dotNet48_offline.zip",
+            "repo": "https://gitcode.com/open-source-toolkit/769c4.git",
             "version": "4.8",
             "type": "zip",
             "installer_exe": "ndp48-x86-x64-allos-enu.exe",
@@ -53,7 +55,7 @@ COMPONENT_MAP = {
         "description": "DirectX 9/10/11 to Vulkan translation layer",
         "verb": "dxvk",
         "gitcode": {
-            "url": "https://gitcode.com/gh_mirrors/dx/dxvk/releases/download/v2.7.1/dxvk-2.7.1.tar.gz",
+            "repo": "https://gitcode.com/gh_mirrors/dx/dxvk.git",
             "version": "2.7.1",
             "setup_script": "setup_dxvk.sh",
         },
@@ -63,7 +65,7 @@ COMPONENT_MAP = {
         "description": "DirectX 12 to Vulkan translation layer",
         "verb": "vkd3d",
         "gitcode": {
-            "url": "https://gitcode.com/gh_mirrors/vk/vkd3d-proton/releases/download/v2.14.1/vkd3d-proton-2.14.1.tar.gz",
+            "repo": "https://gitcode.com/gh_mirrors/vk/vkd3d-proton.git",
             "version": "2.14.1",
             "setup_script": "setup_vkd3d_proton.sh",
         },
@@ -73,7 +75,7 @@ COMPONENT_MAP = {
         "description": "XAudio/X3DAudio reimplementation",
         "verb": "faudio",
         "gitcode": {
-            "url": "https://github.com/Kron4ek/FAudio-Builds/releases/download/20.07/faudio-20.07.tar.xz",
+            "repo": "https://gitcode.com/gh_mirrors/fa/FAudio.git",
             "version": "20.07",
             "setup_script": "wine_setup_faudio.sh",
         },
@@ -140,7 +142,7 @@ COMPONENT_MAP = {
             "version": "Jun2010",
             "type": "directx_redist",
             "redist_file": "directx_Jun2010_redist.exe",
-            "redist_url": "https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe",
+            "redist_url": "https://files.holarse-linuxgaming.de/mirrors/microsoft/directx_Jun2010_redist.exe",
             "dlls": {
                 "d3dx9_43.dll": ["x86", "amd64"],
                 "d3dx9_42.dll": ["x86", "amd64"],
@@ -160,7 +162,7 @@ COMPONENT_MAP = {
             "version": "Jun2010",
             "type": "directx_redist",
             "redist_file": "directx_Jun2010_redist.exe",
-            "redist_url": "https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe",
+            "redist_url": "https://files.holarse-linuxgaming.de/mirrors/microsoft/directx_Jun2010_redist.exe",
             "dlls": {
                 "d3dx11_43.dll": ["x86", "amd64"],
                 "d3dx11_42.dll": ["x86", "amd64"],
@@ -243,6 +245,45 @@ class ComponentManager:
 
         # Fallback to winetricks for other components
         return self._install_via_winetricks(component_name, info, bottle_path, progress_callback)
+
+    def _git_clone(self, repo: str, dest: str,
+                   progress_callback: Callable = None,
+                   label: str = "") -> tuple:
+        """Clone a git repo (shallow) to dest. Returns (success, error)."""
+        if progress_callback:
+            progress_callback(0, 100, f"📥 正在克隆 {label}...")
+        try:
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", repo, dest],
+                capture_output=True, text=True, timeout=300
+            )
+            if result.returncode != 0:
+                return False, f"git clone 失败: {result.stderr.strip()[:200]}"
+            if progress_callback:
+                progress_callback(50, 100, f"✅ {label} 克隆完成")
+            return True, ""
+        except subprocess.TimeoutExpired:
+            return False, "git clone 超时（300秒）"
+        except Exception as e:
+            return False, f"git clone 异常: {e}"
+
+    def _ensure_cloned(self, gc: dict, component_name: str,
+                       progress_callback: Callable = None,
+                       label: str = "") -> tuple:
+        """Ensure the gitcode repo is cloned to cache. Returns (clone_path, error)."""
+        repo = gc["repo"]
+        cache_dir = self.config.components_dir / component_name
+        clone_path = str(cache_dir / "repo")
+
+        # Already cloned? Try to update
+        if Path(clone_path).exists() and (Path(clone_path) / ".git").exists():
+            return clone_path, ""
+
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        ok, err = self._git_clone(repo, clone_path, progress_callback, label)
+        if not ok:
+            return None, err
+        return clone_path, ""
 
     def _download_file(self, url: str, dest_path: str,
                        progress_callback: Callable = None,
@@ -375,37 +416,29 @@ class ComponentManager:
         gc = info["gitcode"]
         label = info["label"]
         version = gc["version"]
-        url = gc["url"]
         install_args = gc.get("install_args", "/quiet /norestart")
         exe_name = gc.get("installer_exe", "")
         setup_type = gc.get("type", "exe")
+        target_file = gc.get("file", "")
 
         if progress_callback:
             progress_callback(0, 100, f"准备安装 {label} {version}...")
 
-        cache_dir = self.config.components_dir / component_name
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        # Clone the gitcode repo to cache
+        clone_path, err = self._ensure_cloned(gc, component_name, progress_callback, label)
+        if not clone_path:
+            return False, err
 
-        # Determine filename from URL
-        filename = url.split("/")[-1]
-        local_path = str(cache_dir / filename)
-
-        # Download if not cached
-        if not Path(local_path).exists():
-            ok, err = self._download_and_verify(url, local_path, progress_callback, label)
-            if not ok:
-                return False, err
+        # Locate the installer file inside the cloned repo
+        if target_file:
+            # Search the whole repo for the named file
+            matches = list(Path(clone_path).rglob(target_file))
+            if not matches:
+                return False, f"在仓库中未找到 {target_file}"
+            local_path = str(matches[0])
         else:
-            # Verify existing cache
-            valid, msg = self._verify_file(local_path)
-            if not valid:
-                try:
-                    os.remove(local_path)
-                except OSError:
-                    pass
-                ok, err = self._download_and_verify(url, local_path, progress_callback, label)
-                if not ok:
-                    return False, f"缓存文件损坏，重新下载失败: {err}（{msg}）"
+            # Fallback: assume the file equals the component name + ext
+            local_path = str(Path(clone_path) / target_file)
 
         extract_dir = None
         try:
@@ -471,47 +504,24 @@ class ComponentManager:
         if progress_callback:
             progress_callback(0, 100, f"准备安装 {label} {version}...")
 
-        cache_dir = self.config.components_dir / component_name
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        tarball_path = str(cache_dir / f"{component_name}-{version}.tar.gz")
-
-        # Download if not cached
-        if not Path(tarball_path).exists():
-            ok, err = self._download_and_verify(url, tarball_path, progress_callback, label)
-            if not ok:
-                return False, err
-        else:
-            # Verify existing cache
-            valid, msg = self._verify_file(tarball_path)
-            if not valid:
-                try:
-                    os.remove(tarball_path)
-                except OSError:
-                    pass
-                ok, err = self._download_and_verify(url, tarball_path, progress_callback, label)
-                if not ok:
-                    return False, f"缓存文件损坏，重新下载失败: {err}（{msg}）"
+        # Clone the gitcode repo to cache
+        clone_path, err = self._ensure_cloned(gc, component_name, progress_callback, label)
+        if not clone_path:
+            return False, err
 
         if progress_callback:
-            progress_callback(60, 100, f"📦 正在解压 {label}...")
+            progress_callback(60, 100, f"📦 正在准备 {label}...")
 
-        # Extract to temp directory
-        tmp_dir = tempfile.mkdtemp(prefix=f"winbridge_{component_name}_")
+        # The cloned repo IS the extracted content; find setup script
+        setup_path = Path(clone_path) / setup_script
+        if not setup_path.exists():
+            # Search recursively
+            matches = list(Path(clone_path).rglob(setup_script))
+            if not matches:
+                return False, f"在仓库中未找到安装脚本 {setup_script}"
+            setup_path = matches[0]
+
         try:
-            with tarfile.open(tarball_path, "r:gz") as tar:
-                tar.extractall(path=tmp_dir)
-
-            # Find the setup script inside the extracted directory
-            extracted_dirs = [d for d in Path(tmp_dir).iterdir() if d.is_dir()]
-            if not extracted_dirs:
-                return False, f"解压后未找到目录，可能压缩包格式不正确"
-
-            extract_root = extracted_dirs[0]
-            setup_path = extract_root / setup_script
-
-            if not setup_path.exists():
-                return False, f"未找到安装脚本 {setup_script}"
-
             if progress_callback:
                 progress_callback(80, 100, f"⚙ 正在安装 {label} 到容器...")
 
@@ -534,10 +544,6 @@ class ComponentManager:
             return False, f"安装超时（300秒）"
         except Exception as e:
             return False, str(e)
-        finally:
-            # Clean up temp directory
-            import shutil
-            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def _install_directx_redist(self, component_name: str, info: dict,
                                 bottle_path: str,

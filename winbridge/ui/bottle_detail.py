@@ -1260,39 +1260,63 @@ class BottleDetailWidget(QWidget):
             self.dll_table.setItem(row, 1, QTableWidgetItem(mode))
 
     def _load_shortcuts(self):
-        """Load program shortcuts from the bottle and Linux desktop."""
+        """Load program shortcuts from the bottle and Linux desktop.
+
+        Deduplicates by file basename: when the same .lnk exists both on
+        the bottle's Desktop and in its Start Menu, only one entry is
+        shown (Desktop wins, since that is what the user actually sees
+        inside the Windows desktop).
+        """
         self.shortcuts_list.clear()
         found = 0
+        # Map basename -> absolute path; first occurrence wins.
+        seen = {}
+
+        def _add(lnk_path: Path):
+            nonlocal found
+            name = lnk_path.name
+            if name in seen:
+                return
+            seen[name] = str(lnk_path)
+            item = QListWidgetItem(name)
+            item.setData(Qt.UserRole, str(lnk_path))
+            self.shortcuts_list.addItem(item)
+            found += 1
+
         if self.current_bottle:
             drive_c = self.current_bottle.path / "drive_c"
             if drive_c.exists():
-                # Scan inside the bottle's common directories
-                common_dirs = [
-                    drive_c / "Program Files (x86)",
-                    drive_c / "Program Files",
+                # Desktop dirs first (higher priority for dedup)
+                user = os.environ.get("USER", "root")
+                desktop_dirs = [
                     drive_c / "users" / "Public" / "Desktop",
                     drive_c / "users" / "root" / "Desktop",
                     drive_c / "users" / "winuser" / "Desktop",
-                    drive_c / "users" / (os.environ.get("USER", "root")) / "Desktop",
-                    drive_c / "users" / (os.environ.get("USER", "root")) / "Start Menu",
-                    drive_c / "users" / (os.environ.get("USER", "root")) / "Application Data",
+                    drive_c / "users" / user / "Desktop",
                 ]
-                for d in common_dirs:
+                for d in desktop_dirs:
                     if d.exists():
-                        for exe in d.glob("**/*.lnk"):
-                            item = QListWidgetItem(exe.name)
-                            item.setData(Qt.UserRole, str(exe))
-                            self.shortcuts_list.addItem(item)
-                            found += 1
+                        for exe in d.glob("*.lnk"):
+                            _add(exe)
+
+                # Then Start Menu (recursive) — skipped if already on Desktop
+                start_menu = drive_c / "users" / user / "Start Menu"
+                if start_menu.exists():
+                    for exe in start_menu.glob("**/*.lnk"):
+                        _add(exe)
+
+                # Also scan Program Files for direct .exe shortcuts
+                for pf in [drive_c / "Program Files (x86)",
+                           drive_c / "Program Files"]:
+                    if pf.exists():
+                        for exe in pf.glob("**/*.exe"):
+                            _add(exe)
 
         # Also scan the Linux desktop for .lnk files
         for desktop_dir in [Path.home() / "桌面", Path.home() / "Desktop"]:
             if desktop_dir.exists():
                 for lnk in desktop_dir.glob("*.lnk"):
-                    item = QListWidgetItem(lnk.name)
-                    item.setData(Qt.UserRole, str(lnk))
-                    self.shortcuts_list.addItem(item)
-                    found += 1
+                    _add(lnk)
 
         if found == 0:
             self.shortcuts_list.addItem("(暂无快捷方式，运行程序后自动生成)")
