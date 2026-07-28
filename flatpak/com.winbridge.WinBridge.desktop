@@ -1,0 +1,13 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Name=WinBridge
+Comment=基于 Wine 的 Windows 应用容器管理器
+GenericName=Windows 应用容器管理器
+Exec=winbridge.sh
+Icon=com.winbridge.WinBridge
+Type=Application
+Categories=Utility;X-Emulation;
+Keywords=wine;windows;container;prefix;
+Terminal=false
+StartupNotify=true
+StartupWMClass=WinBridge

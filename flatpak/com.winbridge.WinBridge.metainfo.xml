@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.winbridge.WinBridge</id>
+  <name>WinBridge</name>
+  <summary>基于 Wine 的 Windows 应用容器管理器</summary>
+  <developer id="com.winbridge">
+    <name>WinBridge Team</name>
+  </developer>
+  <description>
+    <p>WinBridge 是一个基于 Wine 的 Windows 应用容器管理器，为 Linux 桌面带来便捷的 Wine 体验。</p>
+    <p>功能特点：</p>
+    <ul>
+      <li>创建和管理独立的 Wine 容器（前缀）</li>
+      <li>从镜像站快速安装运行库组件（VC++、.NET、DXVK 等）</li>
+      <li>支持多个 Wine 版本切换</li>
+      <li>DLL 覆盖配置</li>
+      <li>注册表编辑器</li>
+      <li>任务管理器</li>
+    </ul>
+  </description>
+  <url type="homepage">https://gitcode.com/winbridge/winbridge</url>
+  <project_license>MIT</project_license>
+  <metadata_license>MIT</metadata_license>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-07-27" />
+  </releases>
+  <screenshots>
+    <screenshot type="default"></screenshot>
+  </screenshots>
+  <categories>
+    <category>Utility</category>
+    <category>Emulation</category>
+  </categories>
+  <keywords>
+    <keyword>wine</keyword>
+    <keyword>windows</keyword>
+    <keyword>container</keyword>
+    <keyword>prefix</keyword>
+  </keywords>
+</component>

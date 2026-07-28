@@ -1,0 +1,67 @@
+id: com.winbridge.WinBridge
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+base: com.riverbankcomputing.PyQt.BaseApp
+base-version: '5.15-25.08'
+command: winbridge.sh
+
+finish-args:
+  # X11 + Wayland
+  - --socket=x11
+  - --socket=wayland
+  # Network access (for downloading components)
+  - --share=network
+  # Access host Wine installation
+  - --filesystem=/usr/bin/wine
+  - --filesystem=/usr/bin/wine64
+  - --filesystem=/usr/bin/wineserver
+  - --filesystem=/usr/lib/wine
+  # Access host winetricks
+  - --filesystem=/usr/bin/winetricks
+  # WinBridge data directories
+  - --filesystem=~/.local/share/winbridge:create
+  - --filesystem=~/.config/winbridge:create
+  - --filesystem=~/.cache/winetricks:create
+  # D-Bus
+  - --talk-name=org.freedesktop.Flatpak
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /man
+  - /share/man
+  - /share/doc
+  - '*.la'
+  - '*.a'
+
+modules:
+  - name: winetricks
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 winetricks /app/bin/winetricks
+    sources:
+      - type: dir
+        path: ../winetricks
+
+  - name: winbridge
+    buildsystem: simple
+    build-commands:
+      # Install the wrapper script as entry point
+      - install -Dm755 flatpak/winbridge.sh /app/bin/winbridge.sh
+      # Install main entry point
+      - install -Dm755 main.py /app/lib/winbridge/main.py
+      # Install the core library
+      - cp -r winbridge /app/lib/winbridge/winbridge
+      # Install winetricks (project-integrated copy)
+      - cp -r winetricks /app/lib/winbridge/winetricks
+      # Desktop file
+      - install -Dm644 flatpak/com.winbridge.WinBridge.desktop /app/share/applications/com.winbridge.WinBridge.desktop
+      # Icon
+      - install -Dm644 winbridge/resources/logo.png /app/share/icons/hicolor/512x512/apps/com.winbridge.WinBridge.png
+      - install -Dm644 winbridge/resources/logo.png /app/share/icons/hicolor/256x256/apps/com.winbridge.WinBridge.png
+      # AppStream metadata
+      - install -Dm644 flatpak/com.winbridge.WinBridge.metainfo.xml /app/share/metainfo/com.winbridge.WinBridge.metainfo.xml
+    sources:
+      - type: dir
+        path: ../

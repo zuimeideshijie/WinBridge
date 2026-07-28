@@ -1481,11 +1481,15 @@ class BottleDetailWidget(QWidget):
             row = self.comp_table.rowCount()
             self.comp_table.insertRow(row)
             item = QTableWidgetItem(comp.get("label", comp["name"]))
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
             item.setData(Qt.UserRole, comp["name"])
             self.comp_table.setItem(row, 0, item)
-            self.comp_table.setItem(row, 1, QTableWidgetItem(comp.get("description", "")))
+            desc_item = QTableWidgetItem(comp.get("description", ""))
+            desc_item.setFlags(desc_item.flags() & ~Qt.ItemIsEditable)
+            self.comp_table.setItem(row, 1, desc_item)
             status = "已安装" if comp["name"] in installed else "可安装"
             status_item = QTableWidgetItem(status)
+            status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
             if comp["name"] in installed:
                 status_item.setForeground(Qt.darkGreen)
             self.comp_table.setItem(row, 2, status_item)
@@ -1502,6 +1506,18 @@ class BottleDetailWidget(QWidget):
             name = item.data(Qt.UserRole)
             if not name:
                 name = item.text()
+
+            # Check if this component needs winetricks or has a GitCode installer
+            comp_info = self.component_manager.get_component_info(name)
+            needs_winetricks = not (comp_info and "gitcode" in comp_info)
+            if needs_winetricks and not self.component_manager.is_available:
+                QMessageBox.warning(self, "缺少依赖",
+                    "未找到 winetricks，无法安装此组件。\n\n"
+                    "请安装 winetricks 后重试：\n"
+                    "  sudo apt install winetricks\n\n"
+                    "或从 https://github.com/Winetricks/winetricks 下载。")
+                return
+
             self.comp_progress.setVisible(True)
             self.comp_progress.setValue(0)
             QApplication.processEvents()
@@ -1529,7 +1545,7 @@ class BottleDetailWidget(QWidget):
                     self.comp_status_label.setText(m)
                 QApplication.processEvents()
 
-            ok = self.component_manager.install(name, bottle_path, on_progress)
+            ok, error_log = self.component_manager.install(name, bottle_path, on_progress)
             if ok:
                 self.current_bottle.add_component(name)
                 self.refresh_components()
@@ -1537,8 +1553,13 @@ class BottleDetailWidget(QWidget):
                 QMessageBox.information(self, "安装完成",
                                         f"组件 '{name}' 安装成功。")
             else:
-                QMessageBox.warning(self, "安装失败",
-                                    f"组件 '{name}' 安装失败，请检查 winetricks 是否已安装。")
+                log_text = error_log if error_log else "（无详细输出）"
+                msg_box = QMessageBox(self)
+                msg_box.setIcon(QMessageBox.Warning)
+                msg_box.setWindowTitle("安装失败")
+                msg_box.setText(f"组件 '{name}' 安装失败。")
+                msg_box.setDetailedText(log_text)
+                msg_box.exec_()
             self.comp_progress.setVisible(False)
 
     def uninstall_component(self):

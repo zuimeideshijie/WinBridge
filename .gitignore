@@ -18,3 +18,9 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Flatpak build artifacts
+.flatpak-builder/
+export-repo/
+WinBridge-x86_64.flatpak
+*.flatpak

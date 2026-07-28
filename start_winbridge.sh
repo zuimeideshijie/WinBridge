@@ -1,1 +1,1 @@
-cd ~/winbridge && python3 main.py
+cd ~/WinBridge && python3 main.py
