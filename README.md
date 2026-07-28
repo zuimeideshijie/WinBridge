@@ -69,7 +69,7 @@ WinBridge 旨在解决这些问题，提供一个**用户友好的图形界面**
 **安装**
 ```bash
 sudo apt install wine
-flatpak install WinBridge-x86_64.flatpak
+sudo apt install winbridge.deb
 ```
 
 **运行 Wine**
