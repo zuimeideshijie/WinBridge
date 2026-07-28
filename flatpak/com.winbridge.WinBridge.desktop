@@ -3,11 +3,12 @@
 Name=WinBridge
 Comment=基于 Wine 的 Windows 应用容器管理器
 GenericName=Windows 应用容器管理器
-Exec=winbridge.sh
+Exec=winbridge.sh %f
 Icon=com.winbridge.WinBridge
 Type=Application
 Categories=Utility;X-Emulation;
 Keywords=wine;windows;container;prefix;
+MimeType=application/x-ms-dos-executable;application/x-msi;application/x-win-lnk;application/x-ms-shortcut;
 Terminal=false
 StartupNotify=true
 StartupWMClass=WinBridge

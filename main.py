@@ -88,7 +88,32 @@ def main():
     window = MainWindow(config, _theme_manager)
     window.show()
 
+    # If launched with a file argument (double-click .exe/.msi/.lnk),
+    # defer handling until the event loop starts so the window is shown first.
+    file_args = [a for a in sys.argv[1:] if not a.startswith("-") and a != "winbridge"]
+    if file_args:
+        from PyQt5.QtCore import QTimer
+        target = file_args[0]
+        QTimer.singleShot(100, lambda: _open_file_in_window(window, target))
+
     sys.exit(app.exec_())
+
+
+def _open_file_in_window(window, file_path):
+    """Open a file (double-clicked .exe/.msi/.lnk) inside the main window.
+
+    Shows an informative message for now; a future version will route the
+    file to the appropriate bottle and launch it via Wine.
+    """
+    from PyQt5.QtWidgets import QMessageBox
+    import os
+    if not os.path.exists(file_path):
+        return
+    QMessageBox.information(
+        window,
+        "打开文件",
+        f"已接收到文件:\n{file_path}\n\n请在 WinBridge 界面中选择对应容器并运行。",
+    )
 
 
 if __name__ == "__main__":

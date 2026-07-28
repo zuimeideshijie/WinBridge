@@ -24,3 +24,6 @@ Thumbs.db
 export-repo/
 WinBridge-x86_64.flatpak
 *.flatpak
+
+# Debian packaging workspace (not published)
+debian/
