@@ -1,6 +1,6 @@
 # WinBridge 用户手册
 
-![WinBridge Logo](../resources/logo.png)
+![logo.png](https://raw.gitcode.com/user-images/assets/10425959/e251b9a2-dc78-444e-ae5a-0d315fa1e0d6/logo.png 'logo.png')
 
 ---
 
