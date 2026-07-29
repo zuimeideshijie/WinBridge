@@ -72,13 +72,6 @@ sudo apt install wine
 sudo apt install winbridge.deb
 ```
 
-**运行 Wine**
-
-
-```bash
-flatpak run WinBridge-x86_64.flatpak
-```
-
 首次启动时，您将看到欢迎界面，引导您创建第一个容器。
 
 ### 2.2 创建第一个容器
