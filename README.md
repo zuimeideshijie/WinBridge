@@ -1,6 +1,6 @@
 # WinBridge 用户手册
 
-![WinBridge Logo](../resources/logo.png)
+![logo.png](https://raw.gitcode.com/user-images/assets/10425959/e251b9a2-dc78-444e-ae5a-0d315fa1e0d6/logo.png 'logo.png')
 
 ---
 
@@ -70,13 +70,6 @@ WinBridge 旨在解决这些问题，提供一个**用户友好的图形界面**
 ```bash
 sudo apt install wine
 sudo apt install winbridge.deb
-```
-
-**运行 Wine**
-
-
-```bash
-flatpak run WinBridge-x86_64.flatpak
 ```
 
 首次启动时，您将看到欢迎界面，引导您创建第一个容器。
