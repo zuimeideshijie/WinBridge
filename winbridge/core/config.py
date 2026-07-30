@@ -13,7 +13,15 @@ class Config:
         self.data_dir = Path.home() / ".local" / "share" / "winbridge"
         self.bottles_dir = self.data_dir / "bottles"
         self.cache_dir = self.data_dir / "cache"
-        self.components_dir = self.data_dir / "components"
+        # Components cache: prefer the project-integrated copy (shipped with
+        # the deb/flatpak, read-only, "开箱即用"). Fall back to the writable
+        # ~/winbridge/components for pre-downloads on systems where the
+        # project copy is absent (e.g. running from source without the deb).
+        project_components = Path(__file__).resolve().parent.parent.parent / "components"
+        if project_components.exists():
+            self.components_dir = project_components
+        else:
+            self.components_dir = Path.home() / "winbridge" / "components"
         self.config_file = self.config_dir / "config.json"
         self._ensure_dirs()
         self._settings = self._load()

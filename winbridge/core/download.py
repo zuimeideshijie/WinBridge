@@ -104,11 +104,6 @@ COMPONENT_MAP = {
         "label": "Core Fonts",
         "description": "Microsoft core web fonts (Arial, Times, etc.)",
         "verb": "corefonts",
-        "gitcode": {
-            "url": "https://gitcode.com/gh_mirrors/co/corefonts/-/archive/master/corefonts.zip",
-            "version": "latest",
-            "setup_script": "",
-        },
     },
     "cjkfonts": {
         "label": "CJK Fonts",
@@ -181,13 +176,19 @@ class ComponentManager:
 
     def _find_winetricks(self) -> str:
         """Find the winetricks binary on the system."""
+        # Resolve the project-integrated winetricks path (full clone, metadata/ shipped)
+        project_root = Path(__file__).resolve().parent.parent.parent
+        project_wt = project_root / "winetricks" / "src" / "winetricks"
         # Check common locations
         candidates = [
-            "winetricks",
-            # Project-integrated winetricks
-            str(Path(__file__).resolve().parent.parent.parent / "winetricks" / "winetricks"),
+            # Project-integrated full winetricks (ships metadata/fonts/*.vars)
+            str(project_wt),
+            # System winetricks as fallback
             "/usr/bin/winetricks",
             "/usr/local/bin/winetricks",
+            "winetricks",
+            # Legacy bundled path (kept for older installs)
+            str(project_root / "winetricks" / "winetricks"),
             # Lutris bundled winetricks
             str(Path.home() / ".local/share/lutris/runtime/winetricks/winetricks"),
         ]
@@ -267,17 +268,48 @@ class ComponentManager:
         except Exception as e:
             return False, f"git clone 异常: {e}"
 
+    def _verify_clone(self, clone_path: str) -> bool:
+        """Verify a cloned repo is complete and usable.
+
+        Checks that .git exists and `git fsck` succeeds. A failed/interrupted
+        clone leaves a partial .git that `git` commands reject — better to
+        detect and re-clone than to misreport "already installed".
+        """
+        if not Path(clone_path).exists():
+            return False
+        if not (Path(clone_path) / ".git").exists():
+            return False
+        try:
+            result = subprocess.run(
+                ["git", "-C", clone_path, "fsck", "--full"],
+                capture_output=True, text=True, timeout=60
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
     def _ensure_cloned(self, gc: dict, component_name: str,
                        progress_callback: Callable = None,
                        label: str = "") -> tuple:
-        """Ensure the gitcode repo is cloned to cache. Returns (clone_path, error)."""
+        """Ensure the gitcode repo is cloned to cache. Returns (clone_path, error).
+
+        On entry, verifies the existing clone's integrity via `git fsck`.
+        If incomplete (interrupted clone, partial .git), deletes it and
+        re-clones from scratch.
+        """
         repo = gc["repo"]
         cache_dir = self.config.components_dir / component_name
         clone_path = str(cache_dir / "repo")
 
-        # Already cloned? Try to update
-        if Path(clone_path).exists() and (Path(clone_path) / ".git").exists():
-            return clone_path, ""
+        # Already cloned? Verify integrity, re-clone if corrupt
+        if Path(clone_path).exists():
+            if self._verify_clone(clone_path):
+                return clone_path, ""
+            # Incomplete clone — remove and re-clone
+            if progress_callback:
+                progress_callback(0, 100, f"⚠ 缓存不完整，重新下载 {label}...")
+            import shutil
+            shutil.rmtree(clone_path, ignore_errors=True)
 
         cache_dir.mkdir(parents=True, exist_ok=True)
         ok, err = self._git_clone(repo, clone_path, progress_callback, label)
@@ -288,25 +320,81 @@ class ComponentManager:
     def _download_file(self, url: str, dest_path: str,
                        progress_callback: Callable = None,
                        label: str = "") -> tuple:
-        """Download a file with progress reporting.
+        """Download a file with real-time progress and speed reporting.
 
-        Returns (success: bool, error: str).
+        Reports percentage, downloaded/total MB, current speed (KB/s),
+        and ETA on every ~50KB chunk. Returns (success: bool, error: str).
         """
+        import time
         if progress_callback:
             progress_callback(0, 100, f"📥 正在下载 {label}...")
 
         try:
-            def report(block_count, block_size, total_size):
-                if progress_callback and total_size > 0:
-                    pct = min(int(block_count * block_size * 100 / total_size), 99)
-                    downloaded = block_count * block_size / (1024 * 1024)
-                    total_mb = total_size / (1024 * 1024)
-                    progress_callback(pct, 100,
-                        f"📥 正在下载 {label}  ({downloaded:.1f}/{total_mb:.1f} MB)")
+            req = urllib.request.Request(url, headers={"User-Agent": "WinBridge/0.1"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                total = int(resp.headers.get("Content-Length", 0))
+                total_mb = total / (1024 * 1024) if total else 0
 
-            urllib.request.urlretrieve(url, dest_path, reporthook=report)
+                # Use a partial file to support resume on interruption
+                part_path = dest_path + ".part"
+                downloaded = 0
+                start_time = time.time()
+                last_cb_time = start_time
+                last_cb_bytes = 0
+                chunk = 65536  # 64KB chunks for finer speed updates
+
+                with open(part_path, "wb") as f:
+                    while True:
+                        buf = resp.read(chunk)
+                        if not buf:
+                            break
+                        f.write(buf)
+                        downloaded += len(buf)
+
+                        if progress_callback:
+                            now = time.time()
+                            elapsed = now - start_time
+                            # Throttle callbacks to ~5 per second max
+                            if now - last_cb_time >= 0.2 or not total:
+                                pct = min(int(downloaded * 100 / total), 99) if total else 50
+                                dl_mb = downloaded / (1024 * 1024)
+                                # Instant speed over the last interval
+                                interval = now - last_cb_time
+                                if interval > 0:
+                                    speed = (downloaded - last_cb_bytes) / interval
+                                else:
+                                    speed = 0
+                                speed_kb = speed / 1024
+                                if total and speed > 0:
+                                    eta_s = (total - downloaded) / speed
+                                    eta_m = int(eta_s // 60)
+                                    eta_s = int(eta_s % 60)
+                                    msg = (f"📥 正在下载 {label}  "
+                                           f"{dl_mb:.1f}/{total_mb:.1f}MB  "
+                                           f"{speed_kb:.1f}KB/s  "
+                                           f"剩余 {eta_m}m{eta_s}s")
+                                else:
+                                    msg = (f"📥 正在下载 {label}  "
+                                           f"{dl_mb:.1f}/{total_mb:.1f}MB  "
+                                           f"{speed_kb:.1f}KB/s")
+                                progress_callback(pct, 100, msg)
+                                last_cb_time = now
+                                last_cb_bytes = downloaded
+
+                # Finalize: rename .part to dest
+                os.replace(part_path, dest_path)
+
+            if progress_callback:
+                progress_callback(100, 100, f"✅ {label} 下载完成")
             return True, ""
         except Exception as e:
+            # Clean up partial file on failure
+            part_path = dest_path + ".part"
+            if os.path.exists(part_path):
+                try:
+                    os.remove(part_path)
+                except OSError:
+                    pass
             return False, f"下载失败: {e}"
 
     @staticmethod
@@ -440,6 +528,30 @@ class ComponentManager:
             # Fallback: assume the file equals the component name + ext
             local_path = str(Path(clone_path) / target_file)
 
+        # Verify the installer file's integrity. A clone can succeed while
+        # the target file inside is still partial (rare, but possible with
+        # LFS or interrupted checkout) — re-clone if verification fails.
+        valid, msg = self._verify_file(local_path)
+        if not valid:
+            if progress_callback:
+                progress_callback(0, 100, f"⚠ 安装包不完整({msg})，重新下载 {label}...")
+            import shutil
+            shutil.rmtree(clone_path, ignore_errors=True)
+            clone_path, err = self._ensure_cloned(gc, component_name, progress_callback, label)
+            if not clone_path:
+                return False, err
+            # Re-locate the file after re-clone
+            if target_file:
+                matches = list(Path(clone_path).rglob(target_file))
+                if not matches:
+                    return False, f"重新下载后仍未找到 {target_file}"
+                local_path = str(matches[0])
+            else:
+                local_path = str(Path(clone_path) / target_file)
+            valid, msg = self._verify_file(local_path)
+            if not valid:
+                return False, f"重新下载后文件仍不完整: {msg}"
+
         extract_dir = None
         try:
             if setup_type == "zip" and exe_name:
@@ -498,7 +610,6 @@ class ComponentManager:
         gc = info["gitcode"]
         label = info["label"]
         version = gc["version"]
-        url = gc["url"]
         setup_script = gc["setup_script"]
 
         if progress_callback:
@@ -656,6 +767,25 @@ class ComponentManager:
             env["WINEPREFIX"] = bottle_path
             env["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d"
             env["WINE"] = "/usr/bin/wine"
+            # Point winetricks at the project-integrated metadata (fonts/*.vars etc.)
+            # so composite verbs like allfonts/cjkfonts enumerate sub-verbs without
+            # needing runtime network access.
+            project_root = Path(__file__).resolve().parent.parent.parent
+            metadata_dir = project_root / "winetricks" / "metadata"
+            if metadata_dir.exists():
+                env["WINETRICKS_METADATA"] = str(metadata_dir)
+            # Force winetricks to use curl instead of aria2c. aria2c hangs on
+            # some SourceForge URLs in CN networks (0 B/s until timeout), which
+            # freezes the UI. curl is more resilient and respects our timeouts.
+            env["WINETRICKS_DOWNLOADER"] = "curl"
+            # Use the components cache dir (project-integrated, read-only,
+            # shipped with the deb) as the winetricks download cache. Once
+            # files are pre-downloaded there, winetricks reads locally and
+            # never hits the network — this is what makes offline install work.
+            wt_cache = self.config.components_dir / "winetricks-cache"
+            if not wt_cache.exists():
+                wt_cache.mkdir(parents=True, exist_ok=True)
+            env["WINETRICKS_CACHE"] = str(wt_cache)
 
             process = subprocess.Popen(
                 [self._winetricks_path, "-q", info["verb"]],

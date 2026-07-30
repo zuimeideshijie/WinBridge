@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QThread
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -1519,7 +1519,11 @@ class BottleDetailWidget(QWidget):
             self.comp_table.setItem(row, 2, status_item)
 
     def install_component(self):
-        """Install the selected component."""
+        """Install the selected component in a background thread.
+
+        Runs component_manager.install() on a QThread so a stuck or
+        slow download (subprocess blocking) cannot freeze the UI.
+        """
         row = self.comp_table.currentRow()
         if row < 0 or not self.current_bottle:
             QMessageBox.information(self, "提示", "请先选择一个组件。")
@@ -1563,28 +1567,63 @@ class BottleDetailWidget(QWidget):
                     )
             self.comp_status_label.show()
 
-            def on_progress(v, t, m=None):
-                self.comp_progress.setValue(v)
-                if m:
-                    self.comp_status_label.setText(m)
-                QApplication.processEvents()
+            # Disable the install button while running to prevent re-entry
+            for btn in self.findChildren(QPushButton):
+                if "安装" in btn.text():
+                    btn.setEnabled(False)
+                    self._install_btn = btn
+                    break
 
-            ok, error_log = self.component_manager.install(name, bottle_path, on_progress)
-            if ok:
-                self.current_bottle.add_component(name)
-                self.refresh_components()
-                self.comp_progress.setValue(100)
-                QMessageBox.information(self, "安装完成",
-                                        f"组件 '{name}' 安装成功。")
-            else:
-                log_text = error_log if error_log else "（无详细输出）"
-                msg_box = QMessageBox(self)
-                msg_box.setIcon(QMessageBox.Warning)
-                msg_box.setWindowTitle("安装失败")
-                msg_box.setText(f"组件 '{name}' 安装失败。")
-                msg_box.setDetailedText(log_text)
-                msg_box.exec_()
-            self.comp_progress.setVisible(False)
+            class InstallCompThread(QThread):
+                progress = pyqtSignal(int, int, str)
+                finished_sig = pyqtSignal(bool, str, str)  # ok, name, error_log
+
+                def __init__(self, cm, name, bottle_path):
+                    super().__init__()
+                    self._cm = cm
+                    self._name = name
+                    self._bottle_path = bottle_path
+
+                def run(self):
+                    def on_progress(v, t, m=None):
+                        self.progress.emit(v, t, m or "")
+                    ok, error_log = self._cm.install(
+                        self._name, self._bottle_path, on_progress)
+                    self.finished_sig.emit(ok, self._name, error_log)
+
+            self._install_thread = InstallCompThread(
+                self.component_manager, name, bottle_path)
+            self._install_thread.progress.connect(self._on_install_progress)
+            self._install_thread.finished_sig.connect(self._on_install_done)
+            self._install_thread.start()
+
+    def _on_install_progress(self, v, t, m=""):
+        """Handle install progress updates from the background thread."""
+        self.comp_progress.setValue(v)
+        if m:
+            self.comp_status_label.setText(m)
+        QApplication.processEvents()
+
+    def _on_install_done(self, ok: bool, name: str, error_log: str):
+        """Handle install completion from the background thread."""
+        if ok:
+            self.current_bottle.add_component(name)
+            self.refresh_components()
+            self.comp_progress.setValue(100)
+            QMessageBox.information(self, "安装完成",
+                                    f"组件 '{name}' 安装成功。")
+        else:
+            log_text = error_log if error_log else "（无详细输出）"
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setWindowTitle("安装失败")
+            msg_box.setText(f"组件 '{name}' 安装失败。")
+            msg_box.setDetailedText(log_text)
+            msg_box.exec_()
+        self.comp_progress.setVisible(False)
+        if hasattr(self, "_install_btn") and self._install_btn:
+            self._install_btn.setEnabled(True)
+            self._install_btn = None
 
     def uninstall_component(self):
         """Uninstall the selected component from the bottle."""
