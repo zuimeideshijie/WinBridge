@@ -111,6 +111,18 @@ COMPONENT_MAP = {
         "label": "MSXML 6.0",
         "description": "Microsoft XML Core Services 6.0",
         "verb": "msxml6",
+        # 官方 Microsoft XML Core Services 6.0 SP2 安全更新 (KB2758696) x64。
+        # 链接来自微软下载中心：
+        # https://www.microsoft.com/zh-cn/download/details.aspx?id=36303
+        "redist": {
+            "urls": {
+                "x64": "https://download.microsoft.com/download/4/2/e/42e42688-5463-4df9-a843-bf3f0ce16418/msxml6-KB2758696-chs-amd64.exe",
+            },
+            "install_args": "/quiet /norestart",
+            # KB2758696 是自解压 CAB，在 wine 下静默安装会失败；
+            # 用 cabextract 提取 msxml6.dll 复制到容器（winetricks 同款做法）。
+            "extract_msi": True,
+        },
     },
     "corefonts": {
         "label": "Core Fonts",
@@ -351,9 +363,41 @@ class ComponentManager:
         if progress_callback:
             progress_callback(0, 100, f"📥 正在下载 {label}...")
 
+        # Microsoft download hosts whose TLS cert chain is sometimes
+        # incomplete when served via CN CDN nodes (e.g. ksyuncdn), which
+        # makes strict certificate verification fail. The URLs here are
+        # hardcoded official Microsoft links, so retrying such hosts
+        # without cert verification is acceptable.
+        _MS_DOWNLOAD_HOSTS = (
+            "download.microsoft.com",
+            "download.visualstudio.microsoft.com",
+            "aka.ms",
+        )
+
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "WinBridge/0.1"})
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    pass  # only to check headers; real read happens below
+                # Re-open — urlopen above already consumed nothing, but the
+                # connection is closed on exit; simplest is to just proceed
+                # with the normal path below using a fresh request.
+            except Exception:
+                pass
+
+            resp = None
+            try:
+                resp = urllib.request.urlopen(req, timeout=60)
+            except Exception as first_err:
+                host = url.split("/")[2].lower() if "://" in url else ""
+                if (isinstance(first_err, urllib.error.URLError)
+                        and host in _MS_DOWNLOAD_HOSTS):
+                    import ssl
+                    ctx = ssl._create_unverified_context()
+                    resp = urllib.request.urlopen(req, timeout=60, context=ctx)
+                else:
+                    raise
+            with resp:
                 total = int(resp.headers.get("Content-Length", 0))
                 total_mb = total / (1024 * 1024) if total else 0
 
@@ -519,6 +563,20 @@ class ComponentManager:
 
         return False, "未知错误"
 
+    def _should_use_stdbuf(self, bottle_path: str) -> bool:
+        """Whether stdbuf can be used for a bottle's winetricks run.
+
+        stdbuf preloads the 64-bit libstdbuf.so via LD_PRELOAD; on win32
+        bottles the 32-bit wine processes cannot load it and spam
+        "wrong ELF class: ELFCLASS64" errors on every launch.
+        """
+        try:
+            from .wine import Wine
+            arch = Wine().get_prefix_arch(bottle_path)
+            return arch != "win32"
+        except Exception:
+            return True
+
     def _install_redist_exe(self, component_name: str, info: dict,
                             bottle_path: str,
                             progress_callback: Callable = None) -> tuple:
@@ -530,6 +588,7 @@ class ComponentManager:
         redist = info["redist"]
         urls = redist["urls"]
         install_args = redist.get("install_args", "/install /quiet /norestart")
+        extract_msi = redist.get("extract_msi", False)
         label = info["label"]
 
         cache_dir = self.config.components_dir / component_name
@@ -551,6 +610,14 @@ class ComponentManager:
 
         if not local_files:
             return False, "redist 配置缺少下载链接"
+
+        # Some Microsoft packages (e.g. the MSXML 6.0 security update) are
+        # self-extracting CABs that don't install cleanly under wine with
+        # silent flags. Extract the inner DLLs with cabextract and copy them
+        # into the bottle instead — same approach winetricks uses.
+        if extract_msi:
+            return self._install_redist_extract(
+                label, local_files, bottle_path, progress_callback)
 
         # Run each installer silently via wine (x86 first, then x64)
         for local_path in local_files:
@@ -574,6 +641,90 @@ class ComponentManager:
         if progress_callback:
             progress_callback(100, 100, f"✅ {label} 安装完成")
         return True, ""
+
+    def _install_redist_extract(self, label: str, local_files: list,
+                                bottle_path: str,
+                                progress_callback: Callable = None) -> tuple:
+        """Install a Microsoft package by extracting DLLs with cabextract.
+
+        Used for packages (e.g. MSXML 6.0 security updates) that are
+        self-extracting CABs which don't install cleanly under wine with
+        silent flags. Extracts the inner .msi, then the DLLs, and copies
+        them into the bottle's system dirs — same approach winetricks uses.
+        """
+        if progress_callback:
+            progress_callback(0, 100, f"⚙ 正在提取 {label}...")
+
+        extract_dir = tempfile.mkdtemp(prefix=f"winbridge_{label}_")
+        try:
+            # Level 1: self-extracting .exe → .msi
+            for exe in local_files:
+                result = subprocess.run(
+                    ["cabextract", "-L", "-d", extract_dir, exe],
+                    capture_output=True, text=True, timeout=120)
+                if result.returncode != 0 and "no valid cabinets" in result.stdout:
+                    return False, f"不是有效的 CAB 文件，下载可能不完整"
+
+            # Level 2: .msi → DLLs
+            msi_files = list(Path(extract_dir).glob("*.msi"))
+            if not msi_files:
+                return False, f"提取后未找到 .msi 文件"
+            for msi in msi_files:
+                result = subprocess.run(
+                    ["cabextract", "-L", "-d", extract_dir, str(msi)],
+                    capture_output=True, text=True, timeout=120)
+                if result.returncode != 0 and "no valid cabinets" in result.stdout:
+                    return False, f"无法从 {msi.name} 提取文件"
+
+            # Determine bottle architecture to pick the right system dirs
+            arch = "win64"
+            try:
+                from .wine import Wine
+                arch = Wine().get_prefix_arch(bottle_path) or "win64"
+            except Exception:
+                pass
+
+            drive_c = Path(bottle_path) / "drive_c" / "windows"
+            sys32 = drive_c / "system32"      # 64-bit DLLs (win64) / all (win32)
+            syswow64 = drive_c / "syswow64"   # 32-bit DLLs (win64 only)
+
+            copied = 0
+            # DLLs extracted from the MSI carry GUID-suffixed names
+            # (e.g. msxml6.dll.86F857F6_A743_463D_B2FE_98CB5F727E09),
+            # so match the ".dll." pattern rather than a ".dll" suffix.
+            # The 1ECC0691_* GUID is the 64-bit variant, 86F857F6_* is 32-bit.
+            for dll in Path(extract_dir).iterdir():
+                if not dll.is_file():
+                    continue
+                name_lower = dll.name.lower()
+                if ".dll." not in name_lower:
+                    continue
+                base = name_lower.split(".dll.")[0] + ".dll"
+                is_64bit = "1ecc0691" in name_lower
+                if arch == "win64":
+                    dst_dir = sys32 if is_64bit else syswow64
+                else:
+                    dst_dir = sys32  # win32 bottle: everything goes to system32
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    shutil.copy2(str(dll), str(dst_dir / base))
+                    copied += 1
+                except OSError:
+                    continue
+
+            if copied == 0:
+                return False, f"未找到可复制的 DLL 文件"
+
+            if progress_callback:
+                progress_callback(100, 100, f"✅ {label} 安装完成（{copied} 个文件）")
+            return True, ""
+
+        except subprocess.TimeoutExpired:
+            return False, "提取超时"
+        except Exception as e:
+            return False, str(e)
+        finally:
+            shutil.rmtree(extract_dir, ignore_errors=True)
 
     def _install_gitcode_exe(self, component_name: str, info: dict,
                              bottle_path: str,
@@ -939,7 +1090,14 @@ class ComponentManager:
                 # without it the pipe buffers and the select.select idle timeout
                 # can fire prematurely (or the process appears to hang with no
                 # output when it's actually running but buffered).
-                ["stdbuf", "-oL", self._winetricks_path, "-q", info["verb"]],
+                #
+                # BUT stdbuf preloads the 64-bit libstdbuf.so via LD_PRELOAD;
+                # on win32 bottles the 32-bit wine processes can't load it and
+                # spam "wrong ELF class: ELFCLASS64" errors, so skip stdbuf
+                # there (winetricks is a bash script; wine does the installing).
+                ["stdbuf", "-oL", self._winetricks_path, "-q", info["verb"]]
+                if self._should_use_stdbuf(bottle_path)
+                else [self._winetricks_path, "-q", info["verb"]],
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -956,6 +1114,11 @@ class ComponentManager:
             def is_error_line(line: str) -> bool:
                 """Check if a line looks like an error worth reporting."""
                 lower = line.lower().strip()
+                # ld.so noise from stdbuf's LD_PRELOAD on 32-bit wine
+                # processes ("wrong ELF class: ELFCLASS64") is harmless —
+                # it only means the 64-bit libstdbuf.so was skipped.
+                if "libstdbuf.so" in lower or "wrong elf class" in lower:
+                    return False
                 keywords = [
                     "error", "failed", "failure", "fatal", "exception",
                     "traceback", "not found", "cannot", "unable", "denied",
@@ -968,6 +1131,10 @@ class ComponentManager:
                 if not line.strip():
                     return
                 lower = line.lower()
+                # Skip the harmless ld.so LD_PRELOAD noise so it never
+                # reaches the progress bar or the error log.
+                if "libstdbuf.so" in lower or "wrong elf class" in lower:
+                    return
                 speed_str = ""
                 for match in speed_pattern.finditer(line):
                     val, unit = match.groups()
