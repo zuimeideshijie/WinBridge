@@ -2,6 +2,8 @@
 
 import os
 import re
+import select
+import shutil
 import tarfile
 import subprocess
 import tempfile
@@ -20,33 +22,43 @@ COMPONENT_MAP = {
         "label": "Visual C++ 2019",
         "description": "Microsoft Visual C++ 2015-2019 Redistributable",
         "verb": "vcrun2019",
-        "gitcode": {
-            "repo": "https://gitcode.com/gh_mirrors/vc/vcredist.git",
-            "version": "0.105.0",
-            "file": "VisualCppRedist_AIO_x86_x64.exe",
-            "install_args": "/ai9 /quiet /norestart",
+        # 官方 VC++ v14 运行时（VS2015-2022 共享同一运行时）。
+        # 链接来自微软《最新支持的 Visual C++ 可再发行包下载》页面：
+        # https://learn.microsoft.com/zh-cn/cpp/windows/latest-supported-vc-redist
+        "redist": {
+            "urls": {
+                "x86": "https://aka.ms/vc14/vc_redist.x86.exe",
+                "x64": "https://aka.ms/vc14/vc_redist.x64.exe",
+            },
+            "install_args": "/install /quiet /norestart",
         },
     },
     "vcrun2022": {
         "label": "Visual C++ 2022",
         "description": "Microsoft Visual C++ 2022 Redistributable",
         "verb": "vcrun2022",
-        "gitcode": {
-            "repo": "https://gitcode.com/gh_mirrors/vc/vcredist.git",
-            "version": "0.105.0",
-            "file": "VisualCppRedist_AIO_x86_x64.exe",
-            "install_args": "/ai9 /quiet /norestart",
+        # 与 vcrun2019 相同：v14 运行时在 VS2017-2026 间二进制兼容，
+        # 官方建议直接使用最新 v14 包。
+        "redist": {
+            "urls": {
+                "x86": "https://aka.ms/vc14/vc_redist.x86.exe",
+                "x64": "https://aka.ms/vc14/vc_redist.x64.exe",
+            },
+            "install_args": "/install /quiet /norestart",
         },
     },
     "dotnet48": {
         "label": ".NET Framework 4.8",
         "description": "Microsoft .NET Framework 4.8",
         "verb": "dotnet48",
-        "gitcode": {
-            "repo": "https://gitcode.com/open-source-toolkit/769c4.git",
-            "version": "4.8",
-            "type": "zip",
-            "installer_exe": "ndp48-x86-x64-allos-enu.exe",
+        # 官方 .NET Framework 4.8 运行时脱机安装包（x86+x64 一体）。
+        # 链接来自微软 .NET Framework 下载页的 download.visualstudio.microsoft.com
+        # CDN（fwlink 的 download.microsoft.com 在 CN 网络不可达）：
+        # https://dotnet.microsoft.com/zh-cn/download/dotnet-framework/net48
+        "redist": {
+            "urls": {
+                "x86_x64": "https://download.visualstudio.microsoft.com/download/pr/7afca223-55d2-470a-8edc-6a1739ae3252/abd170b4b0ec15ad0222a809b761a036/ndp48-x86-x64-allos-enu.exe",
+            },
             "install_args": "/quiet /norestart",
         },
     },
@@ -114,6 +126,7 @@ COMPONENT_MAP = {
         "label": "All Fonts",
         "description": "All common Windows fonts",
         "verb": "allfonts",
+        "direct": True,
     },
     "directmusic": {
         "label": "DirectMusic",
@@ -230,6 +243,15 @@ class ComponentManager:
         info = COMPONENT_MAP.get(component_name)
         if not info:
             return False, f"未知组件 '{component_name}'"
+
+        # Custom direct install (bypasses winetricks entirely)
+        if info.get("direct"):
+            return self._install_direct(component_name, info, bottle_path, progress_callback)
+
+        # Official Microsoft VC++ Redistributable (aka.ms/vc14) — direct
+        # download of x86+x64 packages, no git clone needed.
+        if "redist" in info:
+            return self._install_redist_exe(component_name, info, bottle_path, progress_callback)
 
         # Use custom GitCode installer if configured
         if "gitcode" in info:
@@ -497,6 +519,62 @@ class ComponentManager:
 
         return False, "未知错误"
 
+    def _install_redist_exe(self, component_name: str, info: dict,
+                            bottle_path: str,
+                            progress_callback: Callable = None) -> tuple:
+        """Install a Microsoft VC++ Redistributable from the official aka.ms links.
+
+        Downloads the x86 and x64 packages into the component cache and runs
+        each silently via wine. No git clone or winetricks involved.
+        """
+        redist = info["redist"]
+        urls = redist["urls"]
+        install_args = redist.get("install_args", "/install /quiet /norestart")
+        label = info["label"]
+
+        cache_dir = self.config.components_dir / component_name
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        local_files = []
+        for arch, url in urls.items():
+            if not url:
+                continue
+            file_name = Path(url).name
+            local_path = str(cache_dir / file_name)
+            if progress_callback:
+                progress_callback(0, 100, f"📥 正在下载 {label} ({arch})...")
+            ok, err = self._download_and_verify(
+                url, local_path, progress_callback, f"{label} {arch}")
+            if not ok:
+                return False, err
+            local_files.append(local_path)
+
+        if not local_files:
+            return False, "redist 配置缺少下载链接"
+
+        # Run each installer silently via wine (x86 first, then x64)
+        for local_path in local_files:
+            pkg_name = Path(local_path).name
+            if progress_callback:
+                progress_callback(0, 100, f"⚙ 正在安装 {label} ({pkg_name}) 到容器...")
+            env = os.environ.copy()
+            env["WINEPREFIX"] = bottle_path
+            env["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d"
+            env["WINE"] = "/usr/bin/wine"
+            cmd = ["wine", local_path] + install_args.split()
+            try:
+                result = subprocess.run(cmd, env=env, capture_output=True,
+                                        text=True, timeout=600)
+            except subprocess.TimeoutExpired:
+                return False, f"安装超时（600秒）: {pkg_name}"
+            if result.returncode != 0:
+                err_out = result.stderr.strip() or result.stdout.strip() or "安装程序执行失败"
+                return False, f"{pkg_name} 安装失败: {err_out}"
+
+        if progress_callback:
+            progress_callback(100, 100, f"✅ {label} 安装完成")
+        return True, ""
+
     def _install_gitcode_exe(self, component_name: str, info: dict,
                              bottle_path: str,
                              progress_callback: Callable = None) -> tuple:
@@ -753,6 +831,62 @@ class ComponentManager:
             import shutil
             shutil.rmtree(extract_dir, ignore_errors=True)
 
+    def _install_direct(self, component_name: str, info: dict,
+                        bottle_path: str,
+                        progress_callback: Callable = None) -> tuple:
+        """Direct install from pre-cached files — bypasses winetricks entirely.
+
+        For components like allfonts that have a "direct" flag, this method
+        copies all pre-cached font files from the project-integrated
+        components/ directory into the bottle's Fonts dir, then registers
+        them in the Wine registry. No subprocess is spawned, so there is
+        zero risk of hanging.
+        """
+        if progress_callback:
+            progress_callback(0, 100, f"正在安装 {info['label']}...")
+
+        fonts_dir = Path(bottle_path) / "drive_c" / "windows" / "Fonts"
+        fonts_dir.mkdir(parents=True, exist_ok=True)
+
+        cache_root = self.config.components_dir / "winetricks"
+        if not cache_root.exists():
+            return False, f"缓存目录不存在: {cache_root}"
+
+        total = 0
+        # Walk all subdirectories (calibri/, cambria/, corefonts/, etc.)
+        for pkg_dir in cache_root.iterdir():
+            if not pkg_dir.is_dir():
+                continue
+            for font_file in pkg_dir.iterdir():
+                if not font_file.is_file():
+                    continue
+                ext = font_file.suffix.lower()
+                if ext not in (".ttf", ".ttc", ".otf"):
+                    continue
+                dst = fonts_dir / font_file.name
+                try:
+                    shutil.copy2(str(font_file), str(dst))
+                    total += 1
+                except OSError:
+                    continue
+
+        if progress_callback:
+            progress_callback(80, 100, f"正在注册字体到 Wine 注册表...")
+
+        # Register every font in the bottle's Fonts dir
+        try:
+            from .wine import Wine
+            cfg = self.config
+            w = Wine(cfg.wine_path)
+            registered = w.register_all_fonts(bottle_path)
+        except Exception:
+            registered = 0
+
+        if progress_callback:
+            progress_callback(100, 100, f"✅ {info['label']} 安装完成（{total} 字体，{registered} 已注册）")
+
+        return True, ""
+
     def _install_via_winetricks(self, component_name: str, info: dict,
                                 bottle_path: str,
                                 progress_callback: Callable = None) -> tuple:
@@ -765,7 +899,11 @@ class ComponentManager:
         try:
             env = os.environ.copy()
             env["WINEPREFIX"] = bottle_path
-            env["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d"
+            # Disable mono/gecko auto-install (wineboot tries to download
+            # them on first run, which hangs in CN networks). Also suppress
+            # wine debug output to reduce noise on the pipe.
+            env["WINEDLLOVERRIDES"] = "mscoree=d;winemenubuilder.exe=d"
+            env["WINEDEBUG"] = "-all,fixme-all"
             env["WINE"] = "/usr/bin/wine"
             # Point winetricks at the project-integrated metadata (fonts/*.vars etc.)
             # so composite verbs like allfonts/cjkfonts enumerate sub-verbs without
@@ -778,17 +916,30 @@ class ComponentManager:
             # some SourceForge URLs in CN networks (0 B/s until timeout), which
             # freezes the UI. curl is more resilient and respects our timeouts.
             env["WINETRICKS_DOWNLOADER"] = "curl"
+            # Force winetricks to trust the local cache without sha256
+            # verification. Our pre-downloaded files in components/ may not
+            # match winetricks's recorded sha (different mirror, re-packed),
+            # and sha mismatch in -q mode triggers w_askpermission which
+            # hangs the install. WINETRICKS_FORCE=1 skips the check entirely.
+            env["WINETRICKS_FORCE"] = "1"
             # Use the components cache dir (project-integrated, read-only,
             # shipped with the deb) as the winetricks download cache. Once
             # files are pre-downloaded there, winetricks reads locally and
             # never hits the network — this is what makes offline install work.
-            wt_cache = self.config.components_dir / "winetricks-cache"
+            # NOTE: winetricks builds W_CACHE = ${XDG_CACHE_HOME}/winetricks
+            # and does NOT read the WINETRICKS_CACHE env var, so we must set
+            # XDG_CACHE_HOME pointing at the parent of our "winetricks/" subdir.
+            wt_cache = self.config.components_dir / "winetricks"
             if not wt_cache.exists():
                 wt_cache.mkdir(parents=True, exist_ok=True)
-            env["WINETRICKS_CACHE"] = str(wt_cache)
+            env["XDG_CACHE_HOME"] = str(self.config.components_dir)
 
             process = subprocess.Popen(
-                [self._winetricks_path, "-q", info["verb"]],
+                # stdbuf -oL forces line-buffered output from winetricks/bash,
+                # without it the pipe buffers and the select.select idle timeout
+                # can fire prematurely (or the process appears to hang with no
+                # output when it's actually running but buffered).
+                ["stdbuf", "-oL", self._winetricks_path, "-q", info["verb"]],
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -846,7 +997,17 @@ class ComponentManager:
                 if is_error_line(line):
                     error_lines.append(line.strip())
 
+            IDLE_TIMEOUT = 300  # 5 minutes without output → kill the process
+
             while True:
+                r, _, _ = select.select([process.stdout], [], [], IDLE_TIMEOUT)
+                if not r:
+                    # No output for IDLE_TIMEOUT seconds — process is stuck
+                    process.kill()
+                    process.wait()
+                    if progress_callback:
+                        progress_callback(0, 100, f"⏰ {info['label']} 安装无响应，已终止")
+                    return False, f"安装超时（{IDLE_TIMEOUT}秒无输出）"
                 ch = process.stdout.read(1)
                 if not ch:
                     break
@@ -875,6 +1036,20 @@ class ComponentManager:
                     progress_callback(100, 100, f"✅ {info['label']} 安装完成")
                 else:
                     progress_callback(0, 100, f"❌ {info['label']} 安装失败")
+
+            # Auto-register installed fonts into the Wine registry so GDI
+            # apps can enumerate them. winetricks only copies font files
+            # into drive_c/windows/Fonts/ — without registry entries the
+            # apps render ALL text as boxes. Re-run on every install so
+            # newly added fonts (e.g. allfonts after corefonts) get picked up.
+            if success:
+                try:
+                    from .wine import Wine
+                    cfg = self.config
+                    w = Wine(cfg.wine_path)
+                    w.register_all_fonts(bottle_path)
+                except Exception:
+                    pass  # font registration is best-effort, not fatal
 
             return success, error_log
 

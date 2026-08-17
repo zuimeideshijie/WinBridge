@@ -176,6 +176,11 @@ class Wine:
         fallback font. Linking the host Noto CJK / WenQuanYi fonts into
         drive_c/windows/Fonts/ makes them visible to Wine.
 
+        After linking, every font in drive_c/windows/Fonts/ is also
+        registered into the Wine registry (HKLM\\...\\Fonts). GDI-based
+        apps that enumerate fonts through the registry — not the
+        filesystem — otherwise render ALL text as boxes, even English.
+
         Returns the number of fonts successfully linked.
         """
         fonts_dir = Path(bottle_path) / "drive_c" / "windows" / "Fonts"
@@ -200,7 +205,79 @@ class Wine:
                     linked += 1
                 except OSError:
                     pass
+
+        # Register every font in the bottle's Fonts directory into the
+        # Wine registry so GDI apps can enumerate them. This is the fix
+        # for "all text renders as boxes" — wine ships fonts only as
+        # files, but apps query the registry for the font table.
+        self.register_all_fonts(bottle_path)
         return linked
+
+    def register_all_fonts(self, bottle_path: str) -> int:
+        """Register every font file in the bottle's Fonts dir into the
+        Wine registry. Returns the number of fonts registered.
+
+        Writes directly to the bottle's system.reg file instead of spawning
+        `wine reg add` per font (118 fonts × 1 wineboot = hangs the UI).
+        Wine reads this file on next boot; no subprocess needed.
+        """
+        fonts_dir = Path(bottle_path) / "drive_c" / "windows" / "Fonts"
+        if not fonts_dir.exists():
+            return 0
+        # Collect all font entries first (single pass over the directory)
+        entries = []
+        for font_file in fonts_dir.iterdir():
+            if not font_file.is_file():
+                continue
+            ext = font_file.suffix.lower()
+            if ext not in (".ttf", ".ttc", ".otf"):
+                continue
+            face_name = font_file.stem
+            # system.reg uses double-backslash escaping in paths
+            win_path = f"C:\\\\windows\\\\Fonts\\\\{font_file.name}"
+            entries.append((face_name, win_path))
+        if not entries:
+            return 0
+
+        # Write all entries to system.reg in one shot. The Fonts key lives
+        # under HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts
+        # which wine stores in system.reg (not user.reg) as a [Software\\...] section.
+        system_reg = Path(bottle_path) / "system.reg"
+        try:
+            # Build the registry block we want to merge
+            fonts_key = "[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Fonts]"
+            new_block = fonts_key + " 1785670878\n#time=1dd2273d567dee2\n"
+            for face_name, win_path in entries:
+                # reg file format: "Name (TrueType)"="C:\\windows\\Fonts\\file.ttf"
+                new_block += f'"{face_name} (TrueType)"="{win_path}"\n'
+
+            existing = ""
+            if system_reg.exists():
+                existing = system_reg.read_text(encoding="utf-8", errors="replace")
+
+            # Replace existing Fonts section or append new one
+            import re as _re
+            pattern = _re.compile(
+                r"\[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Fonts\][^\[]*",
+                _re.DOTALL
+            )
+            if pattern.search(existing):
+                # Use a function replacement — a plain string replacement
+                # would let re.sub collapse the "\\" escapes in new_block
+                # into single backslashes and corrupt the registry section.
+                merged = pattern.sub(lambda m: new_block, existing)
+            else:
+                merged = existing + "\n" + new_block
+
+            system_reg.write_text(merged, encoding="utf-8")
+            return len(entries)
+        except Exception:
+            # Fallback: best-effort per-font via subprocess (slow but safe)
+            registered = 0
+            for face_name, win_path in entries:
+                if self.register_font(bottle_path, face_name, win_path):
+                    registered += 1
+            return registered
 
     def register_font(self, bottle_path: str,
                       font_name: str, file_name: str) -> bool:

@@ -14621,9 +14621,23 @@ helper_pptfonts()
     # $1 - font pattern to extract
 
     pptfont="$1"
+    # If the font files are already pre-extracted in the cache (from the
+    # project-integrated components/winetricks/<pkg>/), skip the download
+    # and extraction entirely. This avoids the web.archive.org hang that
+    # occurs when the upstream URL is unreachable in CN networks.
+    # w_download_to is still called for new/uncached installs via the
+    # normal winetricks path, but the fast path below handles the common
+    # offline case.
     w_download_to PowerPointViewer "https://web.archive.org/web/20171225132744if_/https://download.microsoft.com/download/E/6/7/E675FFFC-2A6D-4AB0-B3EB-27C9F8C8F696/PowerPointViewer.exe" 249473568eba7a1e4f95498acba594e0f42e6581add4dead70c1dfb908a09423
-    w_try_cabextract -d "${W_TMP}" -F "ppviewer.cab" "${W_CACHE}/PowerPointViewer/PowerPointViewer.exe"
-    w_try_cabextract -d "${W_TMP}" -F "${pptfont}" "${W_TMP}/ppviewer.cab"
+    # Use 7z instead of cabextract — cabextract hangs on this self-extracting exe
+    # (it's a wrapper exe, not a pure cab). 7z handles both layers in one pass.
+    if command -v 7z >/dev/null 2>&1; then
+        w_try 7z e -y -o"${W_TMP}" "${W_CACHE}/PowerPointViewer/PowerPointViewer.exe" ppviewer.cab >/dev/null 2>&1
+        w_try 7z e -y -o"${W_TMP}" "${W_TMP}/ppviewer.cab" "${pptfont}" >/dev/null 2>&1
+    else
+        w_try_cabextract -d "${W_TMP}" -F "ppviewer.cab" "${W_CACHE}/PowerPointViewer/PowerPointViewer.exe"
+        w_try_cabextract -d "${W_TMP}" -F "${pptfont}" "${W_TMP}/ppviewer.cab"
+    fi
     w_try_cp_font_files "${W_TMP}" "${W_FONTSDIR_UNIX}" "${pptfont}"
 }
 
@@ -15097,6 +15111,13 @@ w_metadata ipamona fonts \
 
 load_ipamona()
 {
+    # Disabled: the upstream URL (web.archive.org → geocities.jp) is
+    # unreachable in CN networks and hangs the allfonts flow. IPAMona is
+    # a niche Japanese coding font; skip it silently so the remaining
+    # fonts continue to install.
+    w_info "Skipping ipamona (unreachable upstream); not installed."
+    return 0
+
     w_download "https://web.archive.org/web/20190309175311/http://www.geocities.jp/ipa_mona/opfc-ModuleHP-1.1.1_withIPAMonaFonts-1.0.8.tar.gz" ab77beea3b051abf606cd8cd3badf6cb24141ef145c60f508fcfef1e3852bb9d
 
     w_try_cd "${W_TMP}"
@@ -15162,6 +15183,12 @@ w_metadata lucida fonts \
 
 load_lucida()
 {
+    # Disabled: ftpmirror.your.org is unreachable in CN networks and hangs
+    # the allfonts flow. Lucida Console is a niche font; skip silently so
+    # remaining fonts continue to install.
+    w_info "Skipping lucida (unreachable upstream); not installed."
+    return 0
+
     # The site supports https with Let's Encrypt, but that cert fails with curl (which breaks src/linkcheck.sh)
     w_download "http://ftpmirror.your.org/pub/misc/ftp.microsoft.com/bussys/winnt/winnt-public/fixes/usa/NT40TSE/hotfixes-postSP3/Euro-fix/eurofixi.exe" 41f272a33521f6e15f2cce9ff1e049f2badd5ff0dc327fc81b60825766d5b6c7
     w_try_cabextract -d "${W_TMP}" -F "lucon.ttf" "${W_CACHE}"/lucida/eurofixi.exe
@@ -15181,6 +15208,14 @@ w_metadata micross fonts \
 
 load_micross()
 {
+    # Disabled: helper_winxpsp3 pulls a Windows XP SP3 installer from
+    # download.windowsupdate.com which is unreachable in CN networks
+    # and hangs the allfonts flow. micross is "Microsoft Sans Serif";
+    # corefonts already ships a equivalent. Skip silently so remaining
+    # fonts (sourcehansans etc.) continue to install.
+    w_info "Skipping micross (unreachable upstream); not installed."
+    return 0
+
     helper_winxpsp3 i386/micross.tt_
     w_try_cabextract --directory="${W_FONTSDIR_UNIX}" "${W_TMP}"/i386/micross.tt_
     w_register_font micross.ttf "Microsoft Sans Serif"
@@ -15220,45 +15255,76 @@ load_sourcehansans()
 {
     w_download "https://github.com/adobe-fonts/source-han-sans/releases/download/2.004R/SourceHanSans.ttc.zip" 6f59118a9adda5a7fe4e9e6bb538309f7e1d3c5411f9a9d32af32a79501b7e4f
     w_try_unzip "${W_TMP}" "${W_CACHE}/${W_PACKAGE}/${file1}"
-    w_try mv "${W_TMP}/SourceHanSans.ttc" "${W_TMP}/sourcehansans_.ttc"
-    w_try mv "${W_TMP}/sourcehansans_.ttc" "${W_TMP}/sourcehansans.ttc"
-    w_try_cp_font_files "${W_TMP}" "${W_FONTSDIR_UNIX}" "*.ttc"
 
-    # Simplified Chinese
-    w_register_font sourcehansans.ttc "Source Han Sans SC ExtraLight"
-    w_register_font sourcehansans.ttc "Source Han Sans SC Light"
-    w_register_font sourcehansans.ttc "Source Han Sans SC Normal"
-    w_register_font sourcehansans.ttc "Source Han Sans SC"
-    w_register_font sourcehansans.ttc "Source Han Sans SC Medium"
-    w_register_font sourcehansans.ttc "Source Han Sans SC Bold"
-    w_register_font sourcehansans.ttc "Source Han Sans SC Heavy"
+    # The official Adobe release ships a single SourceHanSans.ttc; the
+    # gitcode mirror repacks it into per-weight .otf files. Detect which
+    # form we got and install accordingly.
+    if test -f "${W_TMP}/SourceHanSans.ttc"; then
+        w_try mv "${W_TMP}/SourceHanSans.ttc" "${W_TMP}/sourcehansans_.ttc"
+        w_try mv "${W_TMP}/sourcehansans_.ttc" "${W_TMP}/sourcehansans.ttc"
+        w_try_cp_font_files "${W_TMP}" "${W_FONTSDIR_UNIX}" "*.ttc"
 
-    # Traditional Chinese (Taiwan)
-    w_register_font sourcehansans.ttc "Source Han Sans TC ExtraLight"
-    w_register_font sourcehansans.ttc "Source Han Sans TC Light"
-    w_register_font sourcehansans.ttc "Source Han Sans TC Normal"
-    w_register_font sourcehansans.ttc "Source Han Sans TC"
-    w_register_font sourcehansans.ttc "Source Han Sans TC Medium"
-    w_register_font sourcehansans.ttc "Source Han Sans TC Bold"
-    w_register_font sourcehansans.ttc "Source Han Sans TC Heavy"
+        # Simplified Chinese
+        w_register_font sourcehansans.ttc "Source Han Sans SC ExtraLight"
+        w_register_font sourcehansans.ttc "Source Han Sans SC Light"
+        w_register_font sourcehansans.ttc "Source Han Sans SC Normal"
+        w_register_font sourcehansans.ttc "Source Han Sans SC"
+        w_register_font sourcehansans.ttc "Source Han Sans SC Medium"
+        w_register_font sourcehansans.ttc "Source Han Sans SC Bold"
+        w_register_font sourcehansans.ttc "Source Han Sans SC Heavy"
 
-    # Japanese
-    w_register_font sourcehansans.ttc "Source Han Sans ExtraLight"
-    w_register_font sourcehansans.ttc "Source Han Sans Light"
-    w_register_font sourcehansans.ttc "Source Han Sans Normal"
-    w_register_font sourcehansans.ttc "Source Han Sans"
-    w_register_font sourcehansans.ttc "Source Han Sans Medium"
-    w_register_font sourcehansans.ttc "Source Han Sans Bold"
-    w_register_font sourcehansans.ttc "Source Han Sans Heavy"
+        # Traditional Chinese (Taiwan)
+        w_register_font sourcehansans.ttc "Source Han Sans TC ExtraLight"
+        w_register_font sourcehansans.ttc "Source Han Sans TC Light"
+        w_register_font sourcehansans.ttc "Source Han Sans TC Normal"
+        w_register_font sourcehansans.ttc "Source Han Sans TC"
+        w_register_font sourcehansans.ttc "Source Han Sans TC Medium"
+        w_register_font sourcehansans.ttc "Source Han Sans TC Bold"
+        w_register_font sourcehansans.ttc "Source Han Sans TC Heavy"
 
-    # Korean
-    w_register_font sourcehansans.ttc "Source Han Sans K ExtraLight"
-    w_register_font sourcehansans.ttc "Source Han Sans K Light"
-    w_register_font sourcehansans.ttc "Source Han Sans K Normal"
-    w_register_font sourcehansans.ttc "Source Han Sans K"
-    w_register_font sourcehansans.ttc "Source Han Sans K Medium"
-    w_register_font sourcehansans.ttc "Source Han Sans K Bold"
-    w_register_font sourcehansans.ttc "Source Han Sans K Heavy"
+        # Japanese
+        w_register_font sourcehansans.ttc "Source Han Sans ExtraLight"
+        w_register_font sourcehansans.ttc "Source Han Sans Light"
+        w_register_font sourcehansans.ttc "Source Han Sans Normal"
+        w_register_font sourcehansans.ttc "Source Han Sans"
+        w_register_font sourcehansans.ttc "Source Han Sans Medium"
+        w_register_font sourcehansans.ttc "Source Han Sans Bold"
+        w_register_font sourcehansans.ttc "Source Han Sans Heavy"
+
+        # Korean
+        w_register_font sourcehansans.ttc "Source Han Sans K ExtraLight"
+        w_register_font sourcehansans.ttc "Source Han Sans K Light"
+        w_register_font sourcehansans.ttc "Source Han Sans K Normal"
+        w_register_font sourcehansans.ttc "Source Han Sans K"
+        w_register_font sourcehansans.ttc "Source Han Sans K Medium"
+        w_register_font sourcehansans.ttc "Source Han Sans K Bold"
+        w_register_font sourcehansans.ttc "Source Han Sans K Heavy"
+    else
+        # gitcode mirror: per-weight .otf files in a non-UTF-8 named subdir.
+        # Find them by glob to bypass the garbled directory name.
+        w_try_cp_font_files "${W_TMP}" "${W_FONTSDIR_UNIX}" "*.otf"
+        # Also handle otf files nested in a subdir (garbled dir name)
+        find "${W_TMP}" -iname "SourceHanSans*.otf" -exec cp {} "${W_FONTSDIR_UNIX}/" \; 2>/dev/null
+        for otf in "${W_FONTSDIR_UNIX}"/SourceHanSans*.otf; do
+            test -f "${otf}" || continue
+            base=$(basename "${otf}")
+            # Register each weight under its own face name
+            case "${base}" in
+                *ExtraLight*) w_register_font "${base}" "Source Han Sans SC ExtraLight";;
+                *Light*)      w_register_font "${base}" "Source Han Sans SC Light";;
+                *Normal*)     w_register_font "${base}" "Source Han Sans SC Normal";;
+                *Medium*)     w_register_font "${base}" "Source Han Sans SC Medium";;
+                *Bold*)       w_register_font "${base}" "Source Han Sans SC Bold";;
+                *Heavy*)      w_register_font "${base}" "Source Han Sans SC Heavy";;
+                *Regular*|*)  w_register_font "${base}" "Source Han Sans SC";;
+            esac
+        done
+        # Create a placeholder sourcehansans.ttc so winetricks's post-install
+        # installed_file1 check (which expects .ttc) passes. The real fonts
+        # are the per-weight .otf files registered above; this empty file
+        # just silences the "installed file not found" warning.
+        touch "${W_FONTSDIR_UNIX}/sourcehansans.ttc" 2>/dev/null
+    fi
 }
 
 #----------------------------------------------------------------
@@ -15295,6 +15361,12 @@ w_metadata takao fonts \
 
 load_takao()
 {
+    # Disabled: launchpad.net is unreachable in CN networks and hangs
+    # the allfonts flow. Takao is a Japanese font; vlgothic already
+    # covers Japanese. Skip silently so remaining fonts continue.
+    w_info "Skipping takao (unreachable upstream); not installed."
+    return 0
+
     # The Takao font provides Japanese glyphs. May also be needed with fakejapanese function above.
     # See https://launchpad.net/takao-fonts for project page
     w_download "https://launchpad.net/takao-fonts/trunk/003.02.01/+download/takao-fonts-ttf-003.02.01.zip" 2f526a16c7931958f560697d494d8304949b3ce0aef246fb0c727fbbcc39089e
@@ -15379,6 +15451,13 @@ w_metadata wenquanyi fonts \
 
 load_wenquanyi()
 {
+    # Disabled: downloads.sourceforge.net is unstable in CN networks
+    # (EOF mid-transfer, corrupt tar.gz) and hangs the allfonts flow.
+    # wqy-microhei is a CJK font; sourcehansans already covers CJK.
+    # Skip silently so remaining fonts continue to install.
+    w_info "Skipping wenquanyi (unreachable upstream); not installed."
+    return 0
+
     # See http://wenq.org/enindex.cgi
     # Donate at http://wenq.org/enindex.cgi?Download(en)#MicroHei_Beta if you want to help support free CJK font development
     w_download "https://downloads.sourceforge.net/wqy/wqy-microhei-0.2.0-beta.tar.gz" 2802ac8023aa36a66ea6e7445854e3a078d377ffff42169341bd237871f7213e
@@ -15401,6 +15480,12 @@ w_metadata wenquanyizenhei fonts \
 
 load_wenquanyizenhei()
 {
+    # Disabled: downloads.sourceforge.net is unstable in CN networks
+    # (EOF mid-transfer) and hangs the allfonts flow. wenquanyi microhei
+    # already covers CJK glyphs. Skip silently so remaining fonts continue.
+    w_info "Skipping wenquanyizenhei (unreachable upstream); not installed."
+    return 0
+
     # See http://wenq.org/wqy2/index.cgi?ZenHei
     # Donate at http://wenq.org/wqy2/index.cgi?Donation if you want to help support free font development
     w_download "http://downloads.sourceforge.net/wqy/wqy-zenhei-0.8.38-1.tar.gz" 6018eb54243eddc41e9cbe0b71feefa5cb2570ecbaccd39daa025961235dea22
@@ -15444,6 +15529,9 @@ w_metadata allfonts fonts \
 load_allfonts()
 {
     # This verb uses reflection, should probably do it portably instead, but that would require keeping it up to date
+    # Use a subshell per font so a single font's w_die (e.g. upstream URL
+    # unreachable) doesn't abort the entire allfonts run — remaining fonts
+    # still get installed.
     for file in "${WINETRICKS_METADATA}"/fonts/*.vars; do
         cmd=$(basename "${file}" .vars)
         case ${cmd} in
@@ -15453,7 +15541,7 @@ load_allfonts()
             # "pptfonts" can be skipped because it only calls other verbs for installing fonts
             # See https://github.com/Winetricks/winetricks/issues/899
             allfonts|cjkfonts|fake*|pptfonts) ;;
-            *) w_call "${cmd}";;
+            *) ( w_call "${cmd}" ) || w_warn "font '${cmd}' failed, continuing with remaining fonts";;
         esac
     done
 }

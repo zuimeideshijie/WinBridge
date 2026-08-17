@@ -1535,9 +1535,12 @@ class BottleDetailWidget(QWidget):
             if not name:
                 name = item.text()
 
-            # Check if this component needs winetricks or has a GitCode installer
+            # Check if this component needs winetricks or has its own
+            # installer (GitCode / official redist / direct copy)
             comp_info = self.component_manager.get_component_info(name)
-            needs_winetricks = not (comp_info and "gitcode" in comp_info)
+            has_own_installer = bool(comp_info and (
+                "gitcode" in comp_info or "redist" in comp_info or "direct" in comp_info))
+            needs_winetricks = not has_own_installer
             if needs_winetricks and not self.component_manager.is_available:
                 QMessageBox.warning(self, "缺少依赖",
                     "未找到 winetricks，无法安装此组件。\n\n"
