@@ -73,7 +73,7 @@ WinBridge 旨在解决这些问题，提供一个**用户友好的图形界面**
 **安装程序**
 
 ```bash
-sudo apt install winbridge.deb
+sudo apt install 包名
 ```
 
 首次启动时，您将看到欢迎界面，引导您创建第一个容器。
