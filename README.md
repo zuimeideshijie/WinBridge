@@ -65,10 +65,14 @@ WinBridge 旨在解决这些问题，提供一个**用户友好的图形界面**
 
 见“发行版”
 
+**安装wine**
+见winehq官方网站
 
-**安装**
+[https://gitlab.winehq.org/wine/wine/-/wikis/zh_CN/Download](url)
+
+**安装程序**
+
 ```bash
-sudo apt install wine
 sudo apt install winbridge.deb
 ```
 
