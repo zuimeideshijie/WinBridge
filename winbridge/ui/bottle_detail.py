@@ -1,9 +1,10 @@
 """Bottle detail view widget — Windows-native styled detail panel."""
 
 import os
+import subprocess
 from pathlib import Path
 from PyQt5.QtCore import Qt, pyqtSignal, QThread
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QColor
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QGridLayout, QGroupBox, QTabWidget,
@@ -12,7 +13,8 @@ from PyQt5.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QCheckBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QMenu,
     QAction, QProgressBar, QSpacerItem, QSizePolicy,
-    QTreeWidget, QTreeWidgetItem,
+    QTreeWidget, QTreeWidgetItem, QGraphicsDropShadowEffect,
+    QStyle,
 )
 
 from ..core.bottle import Bottle, BottleManager
@@ -22,6 +24,54 @@ from ..core.download import ComponentManager
 from .dialogs import CreateBottleDialog, FirstRunDialog, TaskManagerDialog
 
 FONT_FAMILY = "'Segoe UI', 'Noto Sans CJK SC', 'Microsoft YaHei', 'WenQuanYi Micro Hei', sans-serif"
+
+
+class _RegistryLoadThread(QThread):
+    """Parse the bottle's .reg files in a background thread.
+
+    Reading and tokenizing large registry files on the GUI thread freezes
+    the window. This worker only collects the list of key paths; the tree
+    widgets themselves are built on the main thread (Qt requirement).
+    Emits ``loaded`` with a list of key paths, or nothing if cancelled.
+    """
+    loaded = pyqtSignal(list)
+
+    def __init__(self, bottle_path: str):
+        super().__init__()
+        self.bottle_path = bottle_path
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        key_paths = set()
+        # user.reg lives under HKCU, system.reg under HKLM — prefix the key
+        # paths so the tree can tell them apart and edits target the right hive.
+        for hive, reg_name in (("HKCU", "user.reg"), ("HKLM", "system.reg")):
+            if self._cancel:
+                return
+            reg_path = Path(self.bottle_path) / reg_name
+            if not reg_path.exists():
+                continue
+            try:
+                text = reg_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for line in text.split("\n"):
+                if self._cancel:
+                    return
+                line = line.strip()
+                if not line.startswith("["):
+                    continue
+                end = line.find("]")
+                if end <= 1:
+                    continue
+                key_path = line[1:end].strip()
+                if key_path:
+                    key_paths.add(hive + "\\\\" + key_path)
+        if not self._cancel and key_paths:
+            self.loaded.emit(sorted(key_paths))
 
 # Light file dialog stylesheet
 FILE_DIALOG_STYLE = """
@@ -93,96 +143,102 @@ FILE_DIALOG_STYLE = """
 BTN_DEFAULT = f"""
     QPushButton {{
         font-family: {FONT_FAMILY};
-        border: 1px solid #cccccc;
-        border-radius: 3px;
+        border: 1px solid #CBD5E0;
+        border-radius: 6px;
         padding: 5px 14px;
         font-size: 12px;
-        background: #f0f0f0;
-        color: #333333;
+        background: transparent;
+        color: #2D3748;
     }}
     QPushButton:hover {{
-        background: #e5e5e5;
+        background: #EDF2F7;
+        border-color: #A0AEC0;
     }}
     QPushButton:pressed {{
-        background: #d9d9d9;
+        background: #E2E8F0;
     }}
 """
 
 BTN_PRIMARY = f"""
     QPushButton {{
         font-family: {FONT_FAMILY};
-        border: 1px solid #4a90d9;
-        border-radius: 3px;
+        border: 1px solid #2D3748;
+        border-radius: 6px;
         padding: 5px 14px;
         font-size: 12px;
         font-weight: 600;
-        background: #4a90d9;
-        color: #ffffff;
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                    stop:0 #2D3748, stop:1 #1A202C);
+        color: #FFFFFF;
     }}
     QPushButton:hover {{
-        background: #357abd;
-        border-color: #357abd;
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                    stop:0 #1A202C, stop:1 #171923);
+        border-color: #1A202C;
     }}
     QPushButton:pressed {{
-        background: #2a6cb5;
-        border-color: #2a6cb5;
+        background: #171923;
+        border-color: #171923;
     }}
     QPushButton:disabled {{
-        background: #d0d0d0;
-        border-color: #d0d0d0;
-        color: #888888;
+        background: #CBD5E0;
+        border-color: #CBD5E0;
+        color: #A0AEC0;
     }}
 """
 
 BTN_SUCCESS = f"""
     QPushButton {{
         font-family: {FONT_FAMILY};
-        border: 1px solid #27ae60;
-        border-radius: 3px;
+        border: 1px solid #38B2AC;
+        border-radius: 6px;
         padding: 5px 14px;
         font-size: 12px;
         font-weight: 600;
-        background: #27ae60;
-        color: #ffffff;
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                    stop:0 #38B2AC, stop:1 #319795);
+        color: #FFFFFF;
     }}
     QPushButton:hover {{
-        background: #219a52;
-        border-color: #219a52;
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                    stop:0 #319795, stop:1 #2C7A7B);
+        border-color: #319795;
     }}
     QPushButton:pressed {{
-        background: #1e8c47;
-        border-color: #1e8c47;
+        background: #2C7A7B;
+        border-color: #2C7A7B;
     }}
     QPushButton:disabled {{
-        background: #d0d0d0;
-        border-color: #d0d0d0;
-        color: #888888;
+        background: #CBD5E0;
+        border-color: #CBD5E0;
+        color: #A0AEC0;
     }}
 """
 
 BTN_DANGER = f"""
     QPushButton {{
         font-family: {FONT_FAMILY};
-        border: 1px solid #e74c3c;
-        border-radius: 3px;
+        border: 1px solid #FC8181;
+        border-radius: 6px;
         padding: 5px 14px;
         font-size: 12px;
         font-weight: 600;
-        background: #e74c3c;
-        color: #ffffff;
+        background: #FED7D7;
+        color: #C53030;
     }}
     QPushButton:hover {{
-        background: #c0392b;
-        border-color: #c0392b;
+        background: #FC8181;
+        border-color: #FC8181;
+        color: #FFFFFF;
     }}
     QPushButton:pressed {{
-        background: #a93226;
-        border-color: #a93226;
+        background: #E53E3E;
+        border-color: #E53E3E;
     }}
     QPushButton:disabled {{
-        background: #d0d0d0;
-        border-color: #d0d0d0;
-        color: #888888;
+        background: #EDF2F7;
+        border-color: #E2E8F0;
+        color: #A0AEC0;
     }}
 """
 
@@ -243,19 +299,19 @@ COMBO_STYLE = f"""
 TABLE_STYLE = f"""
     QTableWidget {{
         font-family: {FONT_FAMILY};
-        border: 1px solid #cccccc;
+        border: 1px solid #ffffff;
         border-radius: 3px;
         font-size: 12px;
         background: #ffffff;
-        gridline-color: #e0e0e0;
+        gridline-color: #ffffff;
         color: #333333;
     }}
     QTableWidget::item {{
         padding: 4px 8px;
     }}
     QTableWidget::item:selected {{
-        background: #e8f0fe;
-        color: #1a1a2e;
+        background: #ffffff;
+        color: #2D3748;
     }}
     QHeaderView::section {{
         font-family: {FONT_FAMILY};
@@ -327,6 +383,12 @@ class BottleDetailWidget(QWidget):
         self.btn_taskmgr.clicked.connect(self.open_task_manager)
         toolbar_layout.addWidget(self.btn_taskmgr)
 
+        self.btn_c_drive = QPushButton("前往C盘")
+        self.btn_c_drive.setStyleSheet(BTN_DEFAULT)
+        self.btn_c_drive.setIcon(self.style().standardIcon(QStyle.SP_DirIcon))
+        self.btn_c_drive.clicked.connect(self.open_c_drive)
+        toolbar_layout.addWidget(self.btn_c_drive)
+
         toolbar_layout.addStretch()
 
         self.btn_rename = QPushButton("重命名")
@@ -395,25 +457,33 @@ class BottleDetailWidget(QWidget):
         # Disable controls initially
         self.set_controls_enabled(False)
 
-    def _create_info_card(self, title: str, value: str, color: str = "#4a90d9") -> QFrame:
+    def _create_info_card(self, title: str, value: str, color: str = "#38B2AC") -> QFrame:
         """Create an info card widget."""
         card = QFrame()
-        card.setFixedSize(170, 72)
+        card.setFixedSize(210, 80)
         card.setObjectName("infoCard")
         card.setStyleSheet(f"""
             QFrame {{
-                border: 1px solid #e0e0e0;
-                border-radius: 4px;
+                background: #FFFFFF;
+                border: 1px solid #E2E8F0;
+                border-radius: 10px;
             }}
         """)
+        # Soft drop shadow for the card
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(12)
+        shadow.setOffset(0, 2)
+        shadow.setColor(QColor(45, 55, 72, 40))
+        card.setGraphicsEffect(shadow)
+
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(4)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(5)
 
         title_label = QLabel(title)
         title_label.setStyleSheet(f"""
             font-size: 11px;
-            color: #888888;
+            color: #718096;
             font-family: {FONT_FAMILY};
         """)
         layout.addWidget(title_label)
@@ -467,27 +537,41 @@ class BottleDetailWidget(QWidget):
         sep.setStyleSheet("max-height: 1px;")
         layout.addWidget(sep)
 
-        # Description section
+        # Description section (card)
+        desc_card = QFrame()
+        desc_card.setStyleSheet(f"""
+            QFrame {{
+                background: #FFFFFF;
+                border: 1px solid #E2E8F0;
+                border-radius: 10px;
+                padding: 14px;
+            }}
+        """)
+        desc_card_layout = QVBoxLayout(desc_card)
+        desc_card_layout.setContentsMargins(16, 14, 16, 14)
+        desc_card_layout.setSpacing(8)
+
         desc_header = QLabel("描述")
         desc_header.setStyleSheet(f"""
             font-size: 12px;
             font-weight: 600;
-            color: #333333;
+            color: #2D3748;
             font-family: {FONT_FAMILY};
         """)
-        layout.addWidget(desc_header)
+        desc_card_layout.addWidget(desc_header)
 
         self.description_text = QTextEdit()
         self.description_text.setPlaceholderText("添加容器描述...")
         self.description_text.setMaximumHeight(80)
         self.description_text.setStyleSheet(TEXTEDIT_STYLE)
-        layout.addWidget(self.description_text)
+        desc_card_layout.addWidget(self.description_text)
 
         btn_save_desc = QPushButton("保存描述")
         btn_save_desc.setStyleSheet(BTN_DEFAULT)
         btn_save_desc.clicked.connect(self.save_description)
         btn_save_desc.setFixedWidth(100)
-        layout.addWidget(btn_save_desc, 0, Qt.AlignLeft)
+        desc_card_layout.addWidget(btn_save_desc, 0, Qt.AlignLeft)
+        layout.addWidget(desc_card)
 
         # Separator
         sep2 = QFrame()
@@ -496,33 +580,50 @@ class BottleDetailWidget(QWidget):
         sep2.setStyleSheet("max-height: 1px;")
         layout.addWidget(sep2)
 
-        # Installed components
+        # Installed components (card)
+        comp_card = QFrame()
+        comp_card.setStyleSheet(f"""
+            QFrame {{
+                background: #FFFFFF;
+                border: 1px solid #E2E8F0;
+                border-radius: 10px;
+                padding: 14px;
+            }}
+        """)
+        comp_card_layout = QVBoxLayout(comp_card)
+        comp_card_layout.setContentsMargins(16, 14, 16, 14)
+        comp_card_layout.setSpacing(8)
+
         comp_header = QLabel("已安装组件")
         comp_header.setStyleSheet(f"""
             font-size: 12px;
             font-weight: 600;
-            color: #333333;
+            color: #2D3748;
             font-family: {FONT_FAMILY};
         """)
-        layout.addWidget(comp_header)
+        comp_card_layout.addWidget(comp_header)
 
         self.components_list = QListWidget()
         self.components_list.setStyleSheet(f"""
             QListWidget {{
                 font-family: {FONT_FAMILY};
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                background: #ffffff;
+                border: 1px solid #E2E8F0;
+                border-radius: 8px;
+                background: #FFFFFF;
                 padding: 4px;
-                color: #333333;
+                color: #2D3748;
             }}
             QListWidget::item {{
                 padding: 4px 8px;
                 font-size: 12px;
             }}
+            QListWidget::item:hover {{
+                background: #EDF2F7;
+            }}
         """)
         self.components_list.setMaximumHeight(120)
-        layout.addWidget(self.components_list)
+        comp_card_layout.addWidget(self.components_list)
+        layout.addWidget(comp_card)
 
         layout.addStretch()
         return tab
@@ -894,11 +995,41 @@ class BottleDetailWidget(QWidget):
         btn_refresh_reg.clicked.connect(self._refresh_registry_tree)
         toolbar.addWidget(btn_refresh_reg)
 
+        btn_new_folder = QPushButton("新建文件夹")
+        btn_new_folder.setStyleSheet(BTN_PRIMARY)
+        btn_new_folder.clicked.connect(lambda: self._add_registry_key(None))
+        toolbar.addWidget(btn_new_folder)
+
+        btn_new32 = QPushButton("新建项(32位)")
+        btn_new32.setStyleSheet(BTN_DEFAULT)
+        btn_new32.clicked.connect(lambda: self._add_registry_key("32"))
+        toolbar.addWidget(btn_new32)
+
+        btn_new64 = QPushButton("新建项(64位)")
+        btn_new64.setStyleSheet(BTN_DEFAULT)
+        btn_new64.clicked.connect(lambda: self._add_registry_key("64"))
+        toolbar.addWidget(btn_new64)
+
+        btn_del_key = QPushButton("删除选中项")
+        btn_del_key.setStyleSheet(BTN_DANGER)
+        btn_del_key.clicked.connect(self._delete_registry_key)
+        toolbar.addWidget(btn_del_key)
+
         self.reg_source_label = QLabel("浏览: user.reg + system.reg")
         self.reg_source_label.setStyleSheet(f"""
             font-size: 11px; color: #999999; font-family: {FONT_FAMILY};
         """)
         toolbar.addWidget(self.reg_source_label)
+
+        # Loading indicator — shown while the tree is being parsed in the
+        # background so the UI never freezes.
+        self.reg_loading_label = QLabel("注册表正在加载中...")
+        self.reg_loading_label.setStyleSheet(f"""
+            font-size: 11px; font-weight: 600; color: #ED8936;
+            font-family: {FONT_FAMILY};
+        """)
+        self.reg_loading_label.setVisible(False)
+        toolbar.addWidget(self.reg_loading_label)
 
         toolbar.addStretch()
         layout.addLayout(toolbar)
@@ -948,7 +1079,7 @@ class BottleDetailWidget(QWidget):
         self.reg_value_table.setHorizontalHeaderLabels(["名称", "数据"])
         self.reg_value_table.horizontalHeader().setStretchLastSection(True)
         self.reg_value_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.reg_value_table.setAlternatingRowColors(True)
+        self.reg_value_table.setAlternatingRowColors(False)
         self.reg_value_table.verticalHeader().setVisible(False)
         self.reg_value_table.setStyleSheet(f"""
             QTableWidget {{
@@ -1018,14 +1149,30 @@ class BottleDetailWidget(QWidget):
         return tab
 
     def _on_tab_changed(self, index: int):
-        """Lazy-load the registry tree when the registry tab is selected."""
+        """Lazy-load the registry tree when the registry tab is selected.
+
+        Loading runs in a background thread so the UI never freezes; if the
+        user switches to another tab, the pending load is cancelled.
+        """
         if index == self.tabs.indexOf(self.registry_tab):
             if not self._registry_loaded and self.current_bottle:
                 self._refresh_registry_tree()
                 self._registry_loaded = True
+        else:
+            self._cancel_registry_load()
+
+    def _cancel_registry_load(self):
+        """Cancel a pending background registry load."""
+        thread = getattr(self, "_reg_thread", None)
+        if thread is not None and thread.isRunning():
+            thread.cancel()
+            thread.wait(2000)
+        self._reg_thread = None
+        self.reg_loading_label.setVisible(False)
 
     def _refresh_registry_tree(self):
-        """Refresh the registry tree from the bottle's registry files."""
+        """Refresh the registry tree asynchronously (never blocks the UI)."""
+        self._cancel_registry_load()
         self.reg_tree.clear()
         self.reg_value_table.setRowCount(0)
         self.reg_key_path.setText("")
@@ -1033,22 +1180,23 @@ class BottleDetailWidget(QWidget):
         if not self.current_bottle:
             return
 
-        reg_files = [
-            ("user.reg", self.current_bottle.path / "user.reg"),
-            ("system.reg", self.current_bottle.path / "system.reg"),
-        ]
+        self.reg_loading_label.setVisible(True)
 
-        for label, reg_path in reg_files:
-            if not reg_path.exists():
-                continue
+        # Parse the .reg files in a worker thread; only the resulting key
+        # paths come back to the GUI thread (QTreeWidgetItem must be created
+        # on the main thread).
+        thread = _RegistryLoadThread(str(self.current_bottle.path))
+        thread.loaded.connect(self._on_registry_loaded)
+        # Hide the loading hint when the worker finishes (loaded or cancelled)
+        thread.finished.connect(lambda: self.reg_loading_label.setVisible(False))
+        self._reg_thread = thread
+        thread.start()
 
-            self.reg_source_label.setText(f"浏览: {label}")
-            try:
-                text = reg_path.read_text(encoding="utf-8", errors="replace")
-                self._build_registry_tree(text)
-            except Exception:
-                pass
-
+    def _on_registry_loaded(self, key_paths: list):
+        """Build the tree from key paths parsed by the worker thread."""
+        self.reg_source_label.setText("浏览: user.reg + system.reg")
+        if key_paths:
+            self._build_registry_tree(key_paths)
         self.reg_tree.expandToDepth(1)
 
     def _parse_reg_key_path(self, line: str) -> str:
@@ -1060,45 +1208,41 @@ class BottleDetailWidget(QWidget):
         key_path = line[start + 1:end].strip()
         return key_path
 
-    def _build_registry_tree(self, reg_text: str):
-        """Parse .reg file text and populate the tree widget."""
+    def _build_registry_tree(self, key_paths: list):
+        """Populate the tree from a list of registry key paths.
+
+        ``key_paths`` is a list of full key paths (e.g.
+        "Software\\Microsoft\\Windows NT\\CurrentVersion") parsed in the
+        background thread. Keys are added incrementally, reusing existing
+        parent nodes so duplicate prefixes don't create duplicates.
+        """
         root_items = {}  # top_key -> QTreeWidgetItem
 
-        for line in reg_text.split("\n"):
-            line = line.strip()
-            if not line or line.startswith("Wine") or line.startswith("REGEDIT") or line.startswith("#") or line.startswith(";"):
+        def ensure_item(parent_item, name, full_path):
+            if parent_item is None:
+                item = root_items.get(name)
+                if item is None:
+                    item = QTreeWidgetItem(self.reg_tree, [name])
+                    item.setData(0, Qt.UserRole, name)
+                    root_items[name] = item
+                return item
+            for i in range(parent_item.childCount()):
+                if parent_item.child(i).text(0) == name:
+                    return parent_item.child(i)
+            child = QTreeWidgetItem(parent_item, [name])
+            child.setData(0, Qt.UserRole, full_path)
+            return child
+
+        for key_path in key_paths:
+            if not key_path:
                 continue
+            parts = key_path.split("\\\\")
+            cur = None
+            full = ""
+            for part in parts:
+                full = part if not full else full + "\\\\" + part
+                cur = ensure_item(cur, part, full)
 
-            if line.startswith("["):
-                key_path = self._parse_reg_key_path(line)
-                if not key_path:
-                    continue
-                parts = key_path.split("\\\\")
-
-                # Find or create root item
-                top = parts[0]
-                if top not in root_items:
-                    item = QTreeWidgetItem(self.reg_tree, [top])
-                    item.setData(0, Qt.UserRole, top)
-                    root_items[top] = item
-                    current_item = item
-                else:
-                    current_item = root_items[top]
-
-                # Create sub-items
-                for part in parts[1:]:
-                    found = False
-                    for i in range(current_item.childCount()):
-                        if current_item.child(i).text(0) == part:
-                            current_item = current_item.child(i)
-                            found = True
-                            break
-                    if not found:
-                        child = QTreeWidgetItem(current_item, [part])
-                        child.setData(0, Qt.UserRole, current_item.data(0, Qt.UserRole) + "\\\\" + part)
-                        current_item = child
-
-        # Store root_items for value lookup
         self._reg_root_items = root_items
 
     def _on_reg_item_clicked(self, item, column):
@@ -1115,20 +1259,102 @@ class BottleDetailWidget(QWidget):
 
         self.reg_key_path.setText(f"[{key_path}]")
 
-        # Read values from the .reg file for this key
+        # Read values from the .reg file for this key (only the hive the
+        # key belongs to — user.reg for HKCU, system.reg for HKLM).
         if not self.current_bottle:
             return
 
-        for reg_name in ["user.reg", "system.reg"]:
-            reg_path = self.current_bottle.path / reg_name
-            if not reg_path.exists():
-                continue
+        hive, _, bare_key = key_path.partition("\\\\")
+        reg_name = "user.reg" if hive == "HKCU" else "system.reg"
+        reg_path = self.current_bottle.path / reg_name
+        if not reg_path.exists():
+            return
+        try:
+            text = reg_path.read_text(encoding="utf-8", errors="replace")
+            self._populate_values_for_key(text, bare_key)
+        except Exception:
+            pass
 
-            try:
-                text = reg_path.read_text(encoding="utf-8", errors="replace")
-                self._populate_values_for_key(text, key_path)
-            except Exception:
-                pass
+    def _get_selected_reg_path(self) -> str:
+        """Return the selected tree item's full registry path (HKCU\\… / HKLM\\…)."""
+        item = self.reg_tree.currentItem()
+        if not item:
+            return ""
+        parts = []
+        cur = item
+        while cur:
+            parts.insert(0, cur.text(0))
+            cur = cur.parent()
+        return "\\\\".join(parts)
+
+    def _add_registry_key(self, arch=None):
+        """Create a new registry key under the selected key.
+
+        ``arch``: "32" → /reg:32, "64" → /reg:64, None → default view
+        (used by the "新建文件夹" button).
+        """
+        if not self.current_bottle:
+            return
+        parent = self._get_selected_reg_path()
+        if not parent:
+            QMessageBox.information(self, "提示", "请先在左侧选择一个注册表项。")
+            return
+        from PyQt5.QtWidgets import QInputDialog
+        title = "新建文件夹" if arch is None else f"新建项 ({arch}位)"
+        new_name, ok = QInputDialog.getText(
+            self, title, "新项名称:", QLineEdit.Normal, "")
+        if not ok or not new_name.strip():
+            return
+        new_name = new_name.strip()
+        # Sanity check: no path separators or [] inside a key name
+        if any(c in new_name for c in "\\[]=;"):
+            QMessageBox.warning(self, "无效名称", "项名称不能包含 \\ [ ] = ; 字符。")
+            return
+
+        new_path = parent + "\\\\" + new_name
+        reg_cmd = f"reg add \"{new_path}\" /f"
+        if arch == "32":
+            reg_cmd += " /reg:32"
+        elif arch == "64":
+            reg_cmd += " /reg:64"
+        try:
+            result = self.wine.run_cmd(str(self.current_bottle.path), reg_cmd, timeout=60)
+            if result.returncode == 0:
+                QMessageBox.information(self, "完成", f"已创建注册表项：\n{new_path}")
+                self._refresh_registry_tree()
+            else:
+                QMessageBox.warning(self, "创建失败",
+                    (result.stderr or result.stdout or "wine reg add 返回非零").strip()[:300])
+        except Exception as e:
+            QMessageBox.warning(self, "创建失败", str(e))
+
+    def _delete_registry_key(self):
+        """Delete the selected registry key (and its subkeys)."""
+        if not self.current_bottle:
+            return
+        target = self._get_selected_reg_path()
+        if not target:
+            QMessageBox.information(self, "提示", "请先在左侧选择一个注册表项。")
+            return
+        reply = QMessageBox.warning(
+            self, "确认删除",
+            f"确定要删除注册表项吗？\n{target}\n\n其下的所有子项和值将一并删除！",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+        try:
+            result = self.wine.run_cmd(
+                str(self.current_bottle.path),
+                f"reg delete \"{target}\" /f", timeout=60)
+            if result.returncode == 0:
+                QMessageBox.information(self, "完成", f"已删除注册表项：\n{target}")
+                self._refresh_registry_tree()
+            else:
+                QMessageBox.warning(self, "删除失败",
+                    (result.stderr or result.stdout or "wine reg delete 返回非零").strip()[:300])
+        except Exception as e:
+            QMessageBox.warning(self, "删除失败", str(e))
 
     def _populate_values_for_key(self, reg_text: str, target_key: str):
         """Parse .reg text and populate values for a specific key."""
@@ -1398,6 +1624,23 @@ class BottleDetailWidget(QWidget):
         dialog = TaskManagerDialog(self.wine, bottle_path, self)
         dialog.show()
 
+    def open_c_drive(self):
+        """Open the current bottle's C: drive in the system file manager."""
+        if not self.current_bottle:
+            QMessageBox.information(self, "提示", "请先选择一个容器。")
+            return
+        drive_c = Path(self.current_bottle.path) / "drive_c"
+        if not drive_c.exists():
+            QMessageBox.warning(self, "提示", f"C 盘目录不存在：\n{drive_c}")
+            return
+        try:
+            subprocess.Popen(
+                ["xdg-open", str(drive_c)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "无法打开目录", str(e))
+
     def delete_bottle(self):
         """Delete the current bottle with confirmation."""
         if not self.current_bottle:
@@ -1410,7 +1653,11 @@ class BottleDetailWidget(QWidget):
         )
         if reply == QMessageBox.Yes:
             name = self.current_bottle.name
-            self.current_bottle.delete()
+            try:
+                self.current_bottle.delete()
+            except OSError as e:
+                QMessageBox.critical(self, "删除失败", str(e))
+                return
             self.current_bottle = None
             self.set_controls_enabled(False)
             self.bottle_title.setText("选择容器以查看详情")

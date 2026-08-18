@@ -508,34 +508,14 @@ class MainWindow(QMainWindow):
         kill_action.triggered.connect(self.kill_wine)
         tools_menu.addAction(kill_action)
 
-        # View menu
+        # View menu — light theme only (dark/system modes removed)
         view_menu = menubar.addMenu("视图(&V)")
-
-        self.theme_group = QActionGroup(self)
-        self.theme_group.setExclusive(True)
-
-        current_mode = self.theme_manager.mode
 
         self.action_light = QAction("明色模式", self)
         self.action_light.setCheckable(True)
-        self.action_light.setChecked(current_mode == "light")
+        self.action_light.setChecked(True)
         self.action_light.triggered.connect(lambda: self.switch_theme("light"))
-        self.theme_group.addAction(self.action_light)
         view_menu.addAction(self.action_light)
-
-        self.action_dark = QAction("暗色模式", self)
-        self.action_dark.setCheckable(True)
-        self.action_dark.setChecked(current_mode == "dark")
-        self.action_dark.triggered.connect(lambda: self.switch_theme("dark"))
-        self.theme_group.addAction(self.action_dark)
-        view_menu.addAction(self.action_dark)
-
-        self.action_system = QAction("跟随系统", self)
-        self.action_system.setCheckable(True)
-        self.action_system.setChecked(current_mode == "system")
-        self.action_system.triggered.connect(lambda: self.switch_theme("system"))
-        self.theme_group.addAction(self.action_system)
-        view_menu.addAction(self.action_system)
 
         # Help menu
         help_menu = menubar.addMenu("帮助(&H)")
@@ -720,7 +700,7 @@ class MainWindow(QMainWindow):
 
         installed = set(bottle.installed_components)
         to_install = [(n, i) for n, i in COMPONENT_MAP.items()
-                      if n not in installed]
+                      if n not in installed and not i.get("skip_in_base")]
 
         if not to_install:
             QMessageBox.information(self, "提示",
@@ -738,6 +718,7 @@ class MainWindow(QMainWindow):
                 self.bottle_path = bottle_path
                 self.components = components
                 self.bottle = bottle
+                self.failed_components = []
 
             def run(self):
                 total = len(self.components)
@@ -750,16 +731,17 @@ class MainWindow(QMainWindow):
                         if m:
                             self.status.emit(m)
 
-                    ok = self.component_manager.install(
+                    ok, error_log = self.component_manager.install(
                         name, self.bottle_path, on_progress)
                     if ok:
                         self.status.emit(f"{info['label']} 安装完成")
                         if self.bottle:
                             self.bottle.add_component(name)
                     else:
-                        self.status.emit(f"{info['label']} 安装失败")
+                        self.status.emit(f"{info['label']} 安装失败: {error_log[:100] if error_log else '无详细输出'}")
+                        self.failed_components.append(name)
                 self.progress.emit(100, 100)
-                self.finished.emit(True)
+                self.finished.emit(len(self.failed_components) == 0)
 
         bottle_path = str(bottle.path)
         self.thread = InstallThread(
@@ -806,7 +788,7 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("font-size: 22px; font-weight: 600; color: #1a1a2e;")
         layout.addWidget(title)
 
-        version = QLabel("版本 0.1.0")
+        version = QLabel("版本 0.1.2")
         version.setAlignment(Qt.AlignCenter)
         version.setStyleSheet("font-size: 12px; color: #888888;")
         layout.addWidget(version)

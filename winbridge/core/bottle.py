@@ -195,10 +195,38 @@ class Bottle:
         self.wine.reg(str(self.path), str(reg_path))
 
     def delete(self):
-        """Delete the bottle and all its data."""
-        if self.path.exists():
+        """Delete the bottle and all its data.
+
+        Kills the wineserver and *waits* for it to exit (so file handles
+        are released), then removes the prefix directory and verifies the
+        removal actually succeeded. Without the wait/verify, a residual
+        directory containing user.reg would make list_bottles() show the
+        deleted bottle again moments later.
+        """
+        if not self.path.exists():
+            return True
+        try:
             self.wine.kill(str(self.path))
-            shutil.rmtree(str(self.path), ignore_errors=True)
+        except Exception:
+            pass
+        # Retry removal a few times; a just-killed wineserver may still be
+        # flushing files on the first attempt.
+        for attempt in range(3):
+            try:
+                shutil.rmtree(str(self.path))
+            except OSError:
+                import time
+                time.sleep(1)
+            if not self.path.exists():
+                # Give a SIGKILLed wineserver a moment to die — if it was
+                # still alive it cannot flush, but double-check no registry
+                # files were recreated in the meantime.
+                import time
+                time.sleep(1.5)
+                if not self.path.exists():
+                    return True
+        # Removal failed — don't silently leave a zombie bottle behind.
+        raise OSError(f"删除容器失败，目录仍存在: {self.path}")
 
     def run(self, executable: str, args: list = None) -> bool:
         """Run an executable in the bottle."""

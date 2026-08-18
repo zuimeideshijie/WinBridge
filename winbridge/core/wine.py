@@ -111,14 +111,87 @@ class Wine:
         self.run_cmd(bottle_path, f"winecfg -v {version}", env=env)
 
     def kill(self, bottle_path: str = None):
-        """Kill Wine processes."""
-        cmd = [self.wineserver_path, "-k"]
+        """Kill Wine processes and wait for wineserver to fully exit.
+
+        `wineserver -k` only *requests* shutdown — the wineserver and its
+        child processes (services.exe, winedevice.exe, …) need time to
+        actually exit and release their file handles. Without waiting, a
+        subsequent rmtree of the prefix can silently fail, leaving a
+        residual directory that list_bottles() will show as a bottle again.
+
+        If the wineserver is still alive after -w times out, SIGKILL it:
+        a live wineserver flushes the registry back to disk on exit and
+        would recreate system.reg/user.reg — and the directory — right
+        after we deleted it.
+        """
+        env = os.environ.copy()
         if bottle_path:
-            env = os.environ.copy()
             env["WINEPREFIX"] = bottle_path
-            subprocess.run(cmd, env=env, capture_output=True, timeout=10)
-        else:
-            subprocess.run(cmd, capture_output=True, timeout=10)
+        try:
+            subprocess.run([self.wineserver_path, "-k"],
+                           env=env, capture_output=True, timeout=10)
+            try:
+                # -w blocks until the wineserver has fully shut down
+                subprocess.run([self.wineserver_path, "-w"],
+                               env=env, capture_output=True, timeout=30)
+            except subprocess.TimeoutExpired:
+                # Still alive — force-kill the wineserver for this prefix
+                self._force_kill_wineserver(bottle_path)
+        except subprocess.TimeoutExpired:
+            self._force_kill_wineserver(bottle_path)
+        except Exception:
+            pass
+
+    def _force_kill_wineserver(self, bottle_path: str = None):
+        """SIGKILL the wineserver(s) for a prefix (fallback after -w timeout).
+
+        A wineserver that is killed with SIGKILL cannot flush the registry,
+        so the deleted prefix directory won't be recreated afterwards.
+        """
+        try:
+            import signal
+            for pid in self._find_wineserver_pids(bottle_path):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (OSError, ProcessLookupError):
+                    pass
+        except Exception:
+            pass
+
+    def _find_wineserver_pids(self, bottle_path: str = None) -> list:
+        """Find wineserver process PIDs (optionally for a specific prefix)."""
+        pids = []
+        try:
+            result = subprocess.run(
+                ["ps", "-eo", "pid,args"], capture_output=True, text=True, timeout=10)
+            for line in result.stdout.splitlines()[1:]:
+                parts = line.split(None, 1)
+                if len(parts) < 2:
+                    continue
+                pid, args = parts[0], parts[1]
+                if "wineserver" not in args:
+                    continue
+                if bottle_path:
+                    # Only kill wineservers rooted at this prefix
+                    cwd = os.readlink(f"/proc/{pid}/cwd") if os.path.exists(f"/proc/{pid}/cwd") else ""
+                    prefix = self._wineserver_prefix(pid)
+                    if prefix != bottle_path and cwd != bottle_path:
+                        continue
+                pids.append(int(pid))
+        except Exception:
+            pass
+        return pids
+
+    def _wineserver_prefix(self, pid: int) -> str:
+        """Read WINEPREFIX from a process's environment."""
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as f:
+                for item in f.read().split(b"\0"):
+                    if item.startswith(b"WINEPREFIX="):
+                        return item.split(b"=", 1)[1].decode("utf-8", "ignore")
+        except OSError:
+            pass
+        return ""
 
     def get_prefix_arch(self, bottle_path: str) -> str:
         """Detect bottle architecture."""

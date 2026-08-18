@@ -144,12 +144,15 @@ COMPONENT_MAP = {
         "label": "DirectMusic",
         "description": "DirectMusic API",
         "verb": "directmusic",
+        # 其依赖的 dmusic32.dll 仅存在于已从微软删除的 apr2006 redist，
+        # 当前网络无法获取，排除出"下载基础文件"默认列表以免拖累整体安装。
+        "skip_in_base": True,
         "gitcode": {
             "label": "DirectMusic",
-            "version": "apr2006",
+            "version": "Jun2010",
             "type": "directx_redist",
-            "redist_file": "directx_apr2006_redist.exe",
-            "redist_url": "https://web.archive.org/web/20100920035904/https://download.microsoft.com/download/3/9/7/3972f80c-5711-4e14-9483-959d48a2d03b/directx_apr2006_redist.exe",
+            "redist_file": "DirectX_Jun2010_redist.exe",
+            "redist_url": "https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/DirectX_Jun2010_redist.exe",
             "dlls": {"dmusic32.dll": ["x86"]},
         },
     },
@@ -162,7 +165,7 @@ COMPONENT_MAP = {
             "version": "Jun2010",
             "type": "directx_redist",
             "redist_file": "directx_Jun2010_redist.exe",
-            "redist_url": "https://files.holarse-linuxgaming.de/mirrors/microsoft/directx_Jun2010_redist.exe",
+            "redist_url": "https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe",
             "dlls": {
                 "d3dx9_43.dll": ["x86", "amd64"],
                 "d3dx9_42.dll": ["x86", "amd64"],
@@ -182,7 +185,7 @@ COMPONENT_MAP = {
             "version": "Jun2010",
             "type": "directx_redist",
             "redist_file": "directx_Jun2010_redist.exe",
-            "redist_url": "https://files.holarse-linuxgaming.de/mirrors/microsoft/directx_Jun2010_redist.exe",
+            "redist_url": "https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe",
             "dlls": {
                 "d3dx11_43.dll": ["x86", "amd64"],
                 "d3dx11_42.dll": ["x86", "amd64"],
@@ -332,7 +335,9 @@ class ComponentManager:
         re-clones from scratch.
         """
         repo = gc["repo"]
-        cache_dir = self.config.components_dir / component_name
+        # Downloads go to the user-writable cache dir — components_dir is
+        # read-only in the .deb install (root-owned /usr/lib/winbridge).
+        cache_dir = self.config.cache_dir / component_name
         clone_path = str(cache_dir / "repo")
 
         # Already cloned? Verify integrity, re-clone if corrupt
@@ -376,27 +381,18 @@ class ComponentManager:
 
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "WinBridge/0.1"})
-            try:
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    pass  # only to check headers; real read happens below
-                # Re-open — urlopen above already consumed nothing, but the
-                # connection is closed on exit; simplest is to just proceed
-                # with the normal path below using a fresh request.
-            except Exception:
-                pass
-
-            resp = None
-            try:
+            host = url.split("/")[2].lower() if "://" in url else ""
+            # Microsoft official hosts are hardcoded, and their CN CDN nodes
+            # (e.g. ksyuncdn) often serve an incomplete TLS chain. Connect
+            # without verification directly — failing first and retrying can
+            # stall the UI for 60s+ per attempt (three sequential urlopen
+            # calls could freeze the download bar for minutes).
+            if host in _MS_DOWNLOAD_HOSTS:
+                import ssl
+                ctx = ssl._create_unverified_context()
+                resp = urllib.request.urlopen(req, timeout=60, context=ctx)
+            else:
                 resp = urllib.request.urlopen(req, timeout=60)
-            except Exception as first_err:
-                host = url.split("/")[2].lower() if "://" in url else ""
-                if (isinstance(first_err, urllib.error.URLError)
-                        and host in _MS_DOWNLOAD_HOSTS):
-                    import ssl
-                    ctx = ssl._create_unverified_context()
-                    resp = urllib.request.urlopen(req, timeout=60, context=ctx)
-                else:
-                    raise
             with resp:
                 total = int(resp.headers.get("Content-Length", 0))
                 total_mb = total / (1024 * 1024) if total else 0
@@ -591,8 +587,13 @@ class ComponentManager:
         extract_msi = redist.get("extract_msi", False)
         label = info["label"]
 
-        cache_dir = self.config.components_dir / component_name
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        # Downloads go to the user-writable cache dir — components_dir is
+        # read-only in the .deb install (root-owned /usr/lib/winbridge).
+        cache_dir = self.config.cache_dir / component_name
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return False, f"无法创建缓存目录 {cache_dir}: {e}"
 
         local_files = []
         for arch, url in urls.items():
@@ -900,8 +901,13 @@ class ComponentManager:
         if progress_callback:
             progress_callback(0, 100, f"准备安装 {gc_label} {version}...")
 
-        cache_dir = self.config.components_dir / component_name
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        # Downloads go to the user-writable cache dir — components_dir is
+        # read-only in the .deb install (root-owned /usr/lib/winbridge).
+        cache_dir = self.config.cache_dir / component_name
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return False, f"无法创建缓存目录 {cache_dir}: {e}"
         local_path = str(cache_dir / redist_file)
 
         # Download the redist if not cached
@@ -1073,17 +1079,52 @@ class ComponentManager:
             # and sha mismatch in -q mode triggers w_askpermission which
             # hangs the install. WINETRICKS_FORCE=1 skips the check entirely.
             env["WINETRICKS_FORCE"] = "1"
-            # Use the components cache dir (project-integrated, read-only,
-            # shipped with the deb) as the winetricks download cache. Once
-            # files are pre-downloaded there, winetricks reads locally and
-            # never hits the network — this is what makes offline install work.
+            # Use the user-writable cache dir as the winetricks download
+            # cache — components_dir is read-only in the .deb install
+            # (root-owned /usr/lib/winbridge), and writing there fails with
+            # "mkdir: cannot create directory ... Permission denied".
             # NOTE: winetricks builds W_CACHE = ${XDG_CACHE_HOME}/winetricks
             # and does NOT read the WINETRICKS_CACHE env var, so we must set
             # XDG_CACHE_HOME pointing at the parent of our "winetricks/" subdir.
-            wt_cache = self.config.components_dir / "winetricks"
+            wt_cache = self.config.cache_dir / "winetricks"
             if not wt_cache.exists():
                 wt_cache.mkdir(parents=True, exist_ok=True)
-            env["XDG_CACHE_HOME"] = str(self.config.components_dir)
+            env["XDG_CACHE_HOME"] = str(self.config.cache_dir)
+
+            # Link pre-cached component files (shipped read-only in the deb,
+            # or pre-downloaded in the source tree) into the user cache dir
+            # so winetricks can reuse them instead of re-downloading.
+            # e.g. msxml3 needs win7sp1's windows6.1-KB976932-X64.exe — if we
+            # don't link it, winetricks re-downloads it (947MB) and a partial
+            # download (e.g. 853MB) breaks cabextract with a silent failure.
+            preset_root = self.config.components_dir / "winetricks"
+            if preset_root.exists():
+                try:
+                    for pkg_dir in preset_root.iterdir():
+                        if not pkg_dir.is_dir():
+                            continue
+                        target_pkg = wt_cache / pkg_dir.name
+                        target_pkg.mkdir(parents=True, exist_ok=True)
+                        for preset_file in pkg_dir.iterdir():
+                            if not preset_file.is_file():
+                                continue
+                            target_file = target_pkg / preset_file.name
+                            if target_file.exists():
+                                # Keep it only if it's the same size — a
+                                # partial/interrupted download (smaller file)
+                                # must be replaced by the preset cache.
+                                if target_file.stat().st_size == preset_file.stat().st_size:
+                                    continue
+                                try:
+                                    target_file.unlink()
+                                except OSError:
+                                    continue
+                            try:
+                                target_file.symlink_to(preset_file)
+                            except OSError:
+                                pass
+                except OSError:
+                    pass
 
             process = subprocess.Popen(
                 # stdbuf -oL forces line-buffered output from winetricks/bash,
