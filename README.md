@@ -69,7 +69,7 @@ WinBridge 旨在解决这些问题，提供一个**用户友好的图形界面**
 **安装wine**
 见winehq官方网站
 
-[https://gitlab.winehq.org/wine/wine/-/wikis/zh_CN/Download](url)
+[https://gitlab.winehq.org/wine/wine/-/wikis/zh_CN/Download](https://gitlab.winehq.org/wine/wine/-/wikis/zh_CN/Download)
 
 **安装程序**
 
