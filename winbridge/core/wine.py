@@ -1,11 +1,25 @@
 """Wine integration utilities."""
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
+
+
+# HKLM font table in system.reg. Wine fills it with every host font the first
+# time a prefix is created; a bottle that only lists a handful of faces makes
+# Chromium-built apps abort before they ever show a window.
+_FONT_SECTION = re.compile(
+    r"\[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Fonts\][^\[]*",
+    re.DOTALL,
+)
+# A freshly created prefix lists thousands of host faces; anything this small
+# means our own font registration wiped the table.
+_MIN_FONT_ENTRIES = 200
 
 
 # CJK font candidates on the host (in priority order).
@@ -74,13 +88,17 @@ class Wine:
         if args:
             cmd.extend(args)
 
+        if wait:
+            return subprocess.run(
+                cmd, env=environment, cwd=workdir,
+                capture_output=True, text=True, timeout=300
+            )
+        # Nobody reads the pipes of a detached program, so a chatty one (Wine
+        # logs every fixme) would block once the 64 KB buffer fills.
         return subprocess.Popen(
             cmd, env=environment, cwd=workdir,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True
-        ) if not wait else subprocess.run(
-            cmd, env=environment, cwd=workdir,
-            capture_output=True, text=True, timeout=300
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
 
     def run_cmd(self, bottle_path: str, wine_cmd: str,
@@ -235,11 +253,51 @@ class Wine:
                 capture_output=True, text=True,
                 timeout=120
             )
+            # Let the wineserver flush system.reg before inject_fonts() edits
+            # it — otherwise its in-memory copy overwrites the font table.
+            self._stop_prefix(bottle_path)
             return result.returncode == 0
         except subprocess.TimeoutExpired:
             return False
         except Exception:
             return False
+
+    def _stop_prefix(self, bottle_path: str):
+        """Shut the bottle's wineserver down and wait for it to flush."""
+        environment = os.environ.copy()
+        environment["WINEPREFIX"] = bottle_path
+        for args in (["-k"], ["-w"]):
+            try:
+                subprocess.run([self.wineserver_path] + args, env=environment,
+                               capture_output=True, timeout=90)
+            except Exception:
+                pass
+
+    def _host_font_table(self) -> str:
+        """Font table Wine writes for a brand new prefix.
+
+        Existing prefixes never regenerate it, so a bottle whose table was
+        overwritten has to borrow the table of a throwaway prefix.
+        """
+        tmp = tempfile.mkdtemp(prefix="winbridge-fonts-")
+        try:
+            environment = os.environ.copy()
+            environment["WINEPREFIX"] = tmp
+            environment["WINEARCH"] = "win64"
+            environment["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d"
+            subprocess.run([self.wine_path, "wineboot", "-i"], env=environment,
+                           capture_output=True, timeout=180)
+            self._stop_prefix(tmp)
+            reg = Path(tmp) / "system.reg"
+            if not reg.exists():
+                return ""
+            match = _FONT_SECTION.search(reg.read_text(encoding="utf-8",
+                                                       errors="replace"))
+            return match.group(0) if match else ""
+        except Exception:
+            return ""
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def inject_fonts(self, bottle_path: str) -> int:
         """Symlink host CJK + core Latin fonts into the bottle.
@@ -317,30 +375,46 @@ class Wine:
         # which wine stores in system.reg (not user.reg) as a [Software\\...] section.
         system_reg = Path(bottle_path) / "system.reg"
         try:
-            # Build the registry block we want to merge
-            fonts_key = "[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Fonts]"
-            new_block = fonts_key + " 1785670878\n#time=1dd2273d567dee2\n"
-            for face_name, win_path in entries:
-                # reg file format: "Name (TrueType)"="C:\\windows\\Fonts\\file.ttf"
-                new_block += f'"{face_name} (TrueType)"="{win_path}"\n'
+            # Write only while the wineserver is down: it keeps the registry in
+            # memory and would flush its own copy over our table on exit.
+            self._stop_prefix(bottle_path)
 
             existing = ""
             if system_reg.exists():
                 existing = system_reg.read_text(encoding="utf-8", errors="replace")
 
-            # Replace existing Fonts section or append new one
-            import re as _re
-            pattern = _re.compile(
-                r"\[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Fonts\][^\[]*",
-                _re.DOTALL
-            )
-            if pattern.search(existing):
-                # Use a function replacement — a plain string replacement
-                # would let re.sub collapse the "\\" escapes in new_block
-                # into single backslashes and corrupt the registry section.
-                merged = pattern.sub(lambda m: new_block, existing)
-            else:
-                merged = existing + "\n" + new_block
+            current = _FONT_SECTION.search(existing)
+            table = {}
+            header = ("[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Fonts]"
+                      " 1785670878\n")
+            if current:
+                header = current.group(0).splitlines(True)[0]
+                for line in current.group(0).splitlines()[1:]:
+                    m = re.match(r'^"(.+)"="(.*)"$', line.strip())
+                    if m:
+                        table[m.group(1)] = m.group(2)
+
+            if len(table) < _MIN_FONT_ENTRIES:
+                # The table lost the host fonts Wine registered at creation
+                # time; borrow them from a throwaway prefix.
+                host_block = self._host_font_table()
+                host_lines = host_block.splitlines()[1:] if host_block else []
+                if host_lines and not table:
+                    header = host_block.splitlines(True)[0] if host_block else header
+                for line in host_lines:
+                    m = re.match(r'^"(.+)"="(.*)"$', line.strip())
+                    if m:
+                        table[m.group(1)] = m.group(2)
+
+            for face_name, win_path in entries:
+                # reg file format: "Name (TrueType)"="C:\\windows\\Fonts\\file.ttf"
+                table[f"{face_name} (TrueType)"] = win_path
+
+            block = header + "".join(f'"{k}"="{v}"\n' for k, v in table.items())
+            # Use a function replacement — a plain string replacement would let
+            # re.sub collapse the "\\" escapes and corrupt the section.
+            merged = (_FONT_SECTION.sub(lambda m: block, existing)
+                      if current else existing + "\n" + block)
 
             system_reg.write_text(merged, encoding="utf-8")
             return len(entries)

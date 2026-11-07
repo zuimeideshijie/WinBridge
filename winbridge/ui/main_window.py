@@ -608,7 +608,7 @@ class MainWindow(QMainWindow):
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
-        version = QLabel("版本 1.2.0 · Wine 容器管理器")
+        version = QLabel("版本 1.2.1 · Wine 容器管理器")
         version.setObjectName("muted")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
