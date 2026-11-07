@@ -1512,6 +1512,32 @@ winetricks_selfupdate_rollback()
     exit;
 }
 
+# GitHub 资源在 CN 网络经常不可达，下载地址可统一定向到镜像前缀。
+# 镜像用法为 "<前缀><原始完整 URL>"（如 https://gh-proxy.org/https://github.com/...）。
+# WINETRICKS_GH_MIRROR 为空格分隔的前缀列表：第 n 次下载尝试用第 n 个前缀，
+# 前缀用尽后回退到 GitHub 原始地址。未设置时行为与上游一致。
+winetricks_gh_mirror_url()
+{
+    _wgh_url="$1"
+    _wgh_try="${2:-0}"
+
+    case "${_wgh_url}" in
+        https://github.com/*|https://raw.githubusercontent.com/*|https://api.github.com/*|https://codeload.github.com/*) ;;
+        *) printf '%s\n' "${_wgh_url}" ; return 0 ;;
+    esac
+
+    _wgh_i=0
+    for _wgh_prefix in ${WINETRICKS_GH_MIRROR} ; do
+        _wgh_i=$((_wgh_i + 1))
+        if test "${_wgh_i}" -gt "${_wgh_try}" ; then
+            printf '%s%s\n' "${_wgh_prefix}" "${_wgh_url}"
+            return 0
+        fi
+    done
+
+    printf '%s\n' "${_wgh_url}"
+}
+
 # Download a file
 # Usage: w_download_to (packagename|path to download file) url [shasum [filename [cookie jar]]]
 # Caches downloads in winetrickscache/$packagename
@@ -1610,7 +1636,9 @@ w_download_to()
         w_try_cd "${_W_cache}"
         # Mac folks tend to have curl rather than wget
         # On Mac, 'which' doesn't return good exit status
-        echo "Downloading ${_W_url} to ${_W_cache}"
+        # GitHub 资源经镜像前缀下载（首次尝试第一个镜像，重试时依次换下一个）
+        _W_dl_url=$(winetricks_gh_mirror_url "${_W_url}" $((tries - 1)))
+        echo "Downloading ${_W_dl_url} to ${_W_cache}"
 
         # For sites that prefer Mozilla in the user-agent header, set W_BROWSERAGENT=1
         case "${W_BROWSERAGENT}" in
@@ -1644,7 +1672,7 @@ w_download_to()
                 --out="${_W_file}" \
                 --save-session='' \
                 --stream-piece-selector=geom \
-                "${_W_url}"
+                "${_W_dl_url}"
         elif [ "${WINETRICKS_DOWNLOADER}" = "wget" ] ; then
             # Use -nd to insulate ourselves from people who set -x in WGETRC
             # [*] --retry-connrefused works around the broken sf.net mirroring
@@ -1665,7 +1693,7 @@ w_download_to()
                 --header "Accept: */*" \
                 ${_W_cookiejar:+--load-cookies "${_W_cookiejar}"} \
                 ${_W_agent:+--user-agent="${_W_agent}"} \
-                "${_W_url}"
+                "${_W_dl_url}"
         elif [ "${WINETRICKS_DOWNLOADER}" = "curl" ] ; then
             # Note: curl does not accept '=' when passing options
             # curl doesn't get filename from the location given by the server!
@@ -1681,7 +1709,7 @@ w_download_to()
                 --retry "${WINETRICKS_DOWNLOADER_RETRIES}" \
                 ${_W_cookiejar:+--cookie "${_W_cookiejar}"} \
                 ${_W_agent:+--user-agent "${_W_agent}"} \
-                "${_W_url}"
+                "${_W_dl_url}"
         elif [ "${WINETRICKS_DOWNLOADER}" = "fetch" ] ; then
             # Note: fetch does not support configurable retry count
 
@@ -1690,7 +1718,7 @@ w_download_to()
                 -T "${WINETRICKS_DOWNLOADER_TIMEOUT}" \
                 -o "${_W_file}" \
                 ${_W_agent:+--user-agent="${_W_agent}"} \
-                "${_W_url}"
+                "${_W_dl_url}"
         else
             w_die "Here be dragons"
         fi
@@ -1722,7 +1750,12 @@ w_download_to()
             w_die "Downloading ${_W_url} failed"
         fi
         # Download from the Wayback Machine on second try
-        _W_url="https://web.archive.org/web/2000/${_W_url}"
+        # GitHub URLs instead fall back to the next mirror (or the original
+        # address), since archive.org rarely has GitHub release assets.
+        case "${_W_url}" in
+            https://github.com/*|https://raw.githubusercontent.com/*|https://api.github.com/*|https://codeload.github.com/*) ;;
+            *) _W_url="https://web.archive.org/web/2000/${_W_url}" ;;
+        esac
     done
 
     if test "${_W_sum}" && test ! "${checksum_ok}"; then
@@ -3000,15 +3033,18 @@ winetricks_dl_url_to_stdout()
 {
     winetricks_download_setup
 
+    # GitHub 资源走镜像前缀（此处无重试，使用第一个镜像）
+    _W_dl_url=$(winetricks_gh_mirror_url "$1")
+
     # Not using w_try here as it adds extra output, breaking things.
     # FIXME: add a w_try_quiet() wrapper around w_try() that doesn't print the
     # Executing ... stuff, but still does error checking
     if [ "${WINETRICKS_DOWNLOADER}" = "wget" ] ; then
         ${torify} wget -q -O - --timeout "${WINETRICKS_DOWNLOADER_TIMEOUT}" \
-        --tries "${WINETRICKS_DOWNLOADER_RETRIES}" "$1"
+        --tries "${WINETRICKS_DOWNLOADER_RETRIES}" "${_W_dl_url}"
     elif [ "${WINETRICKS_DOWNLOADER}" = "curl" ] ; then
         ${torify} curl -s --connect-timeout "${WINETRICKS_DOWNLOADER_TIMEOUT}" \
-        --retry "${WINETRICKS_DOWNLOADER_RETRIES}" "$1"
+        --retry "${WINETRICKS_DOWNLOADER_RETRIES}" "${_W_dl_url}"
     elif [ "${WINETRICKS_DOWNLOADER}" = "aria2c" ] ; then
         # aria2c doesn't have support downloading to stdout:
         # https://github.com/aria2/aria2/issues/190
@@ -3031,12 +3067,12 @@ winetricks_dl_url_to_stdout()
                 --stream-piece-selector=geom \
                 --connect-timeout="${WINETRICKS_DOWNLOADER_TIMEOUT}" \
                 --max-tries="${WINETRICKS_DOWNLOADER_RETRIES}" \
-                "$1" > /dev/null
+                "${_W_dl_url}" > /dev/null
         cat "${stdout_tmpfile}"
         rm "${stdout_tmpfile}"
     elif [ "${WINETRICKS_DOWNLOADER}" = "fetch" ] ; then
         # fetch does not support retry count
-        ${torify} fetch -o - -T "${WINETRICKS_DOWNLOADER_TIMEOUT}" "$1" 2>/dev/null
+        ${torify} fetch -o - -T "${WINETRICKS_DOWNLOADER_TIMEOUT}" "${_W_dl_url}" 2>/dev/null
     else
         w_die "Please install aria2c, curl, or wget"
     fi
@@ -14653,7 +14689,7 @@ w_metadata andale fonts \
 
 load_andale()
 {
-    w_download_to corefonts "https://gh-proxy.com/https://github.com/pushcx/corefonts/raw/master/andale32.exe" 0524fe42951adc3a7eb870e32f0920313c71f170c859b5f770d82b4ee111e970
+    w_download_to corefonts "https://github.com/pushcx/corefonts/raw/master/andale32.exe" 0524fe42951adc3a7eb870e32f0920313c71f170c859b5f770d82b4ee111e970
     w_try_cabextract -d "${W_TMP}" "${W_CACHE}"/corefonts/andale32.exe
     w_try_cp_font_files "${W_TMP}" "${W_FONTSDIR_UNIX}" "AndaleMo.TTF"
     w_register_font andalemo.ttf "Andale Mono"
@@ -14671,8 +14707,8 @@ w_metadata arial fonts \
 
 load_arial()
 {
-    w_download_to corefonts "https://gh-proxy.com/https://github.com/pushcx/corefonts/raw/master/arial32.exe" 85297a4d146e9c87ac6f74822734bdee5f4b2a722d7eaa584b7f2cbf76f478f6
-    w_download_to corefonts "https://gh-proxy.com/https://github.com/pushcx/corefonts/raw/master/arialb32.exe" a425f0ffb6a1a5ede5b979ed6177f4f4f4fdef6ae7c302a7b7720ef332fec0a8
+    w_download_to corefonts "https://github.com/pushcx/corefonts/raw/master/arial32.exe" 85297a4d146e9c87ac6f74822734bdee5f4b2a722d7eaa584b7f2cbf76f478f6
+    w_download_to corefonts "https://github.com/pushcx/corefonts/raw/master/arialb32.exe" a425f0ffb6a1a5ede5b979ed6177f4f4f4fdef6ae7c302a7b7720ef332fec0a8
 
     w_try_cabextract -d "${W_TMP}" "${W_CACHE}"/corefonts/arial32.exe
     w_try_cp_font_files "${W_TMP}" "${W_FONTSDIR_UNIX}" "Arial*.TTF"
@@ -14698,7 +14734,7 @@ w_metadata comicsans fonts \
 
 load_comicsans()
 {
-    w_download_to corefonts "https://gh-proxy.com/https://github.com/pushcx/corefonts/raw/master/comic32.exe" 9c6df3feefde26d4e41d4a4fe5db2a89f9123a772594d7f59afd062625cd204e
+    w_download_to corefonts "https://github.com/pushcx/corefonts/raw/master/comic32.exe" 9c6df3feefde26d4e41d4a4fe5db2a89f9123a772594d7f59afd062625cd204e
     w_try_cabextract -d "${W_TMP}" "${W_CACHE}"/corefonts/comic32.exe
     w_try_cp_font_files "${W_TMP}" "${W_FONTSDIR_UNIX}" "Comic*.TTF"
     w_register_font comicbd.ttf "Comic Sans MS Bold"
@@ -14716,7 +14752,7 @@ w_metadata courier fonts \
     installed_file1="${W_FONTSDIR_WIN}/cour.ttf"
 load_courier()
 {
-    w_download_to corefonts "https://gh-proxy.com/https://github.com/pushcx/corefonts/raw/master/courie32.exe" bb511d861655dde879ae552eb86b134d6fae67cb58502e6ff73ec5d9151f3384
+    w_download_to corefonts "https://github.com/pushcx/corefonts/raw/master/courie32.exe" bb511d861655dde879ae552eb86b134d6fae67cb58502e6ff73ec5d9151f3384
     w_try_cabextract -d "${W_TMP}" "${W_CACHE}"/corefonts/courie32.exe
     w_try_cp_font_files "${W_TMP}" "${W_FONTSDIR_UNIX}" "cour*.ttf"
     w_register_font courbd.ttf "Courier New Bold"
@@ -14736,7 +14772,7 @@ w_metadata georgia fonts \
     installed_file1="${W_FONTSDIR_WIN}/georgia.ttf"
 load_georgia()
 {
-    w_download_to corefonts "https://gh-proxy.com/https://github.com/pushcx/corefonts/raw/master/georgi32.exe" 2c2c7dcda6606ea5cf08918fb7cd3f3359e9e84338dc690013f20cd42e930301
+    w_download_to corefonts "https://github.com/pushcx/corefonts/raw/master/georgi32.exe" 2c2c7dcda6606ea5cf08918fb7cd3f3359e9e84338dc690013f20cd42e930301
     w_try_cabextract -d "${W_TMP}" "${W_CACHE}"/corefonts/georgi32.exe
     w_try_cp_font_files "${W_TMP}" "${W_FONTSDIR_UNIX}" "Georgia*.TTF"
     w_register_font georgiab.ttf "Georgia Bold"
@@ -14757,7 +14793,7 @@ w_metadata impact fonts \
 
 load_impact()
 {
-    w_download_to corefonts "https://gh-proxy.com/https://github.com/pushcx/corefonts/raw/master/impact32.exe" 6061ef3b7401d9642f5dfdb5f2b376aa14663f6275e60a51207ad4facf2fccfb
+    w_download_to corefonts "https://github.com/pushcx/corefonts/raw/master/impact32.exe" 6061ef3b7401d9642f5dfdb5f2b376aa14663f6275e60a51207ad4facf2fccfb
     w_try_cabextract -d "${W_TMP}" "${W_CACHE}"/corefonts/impact32.exe
     w_try_cp_font_files "${W_TMP}" "${W_FONTSDIR_UNIX}" "Impact.TTF"
     w_register_font impact.ttf "Impact"
@@ -14775,7 +14811,7 @@ w_metadata times fonts \
 
 load_times()
 {
-    w_download_to corefonts "https://gh-proxy.com/https://github.com/pushcx/corefonts/raw/master/times32.exe" db56595ec6ef5d3de5c24994f001f03b2a13e37cee27bc25c58f6f43e8f807ab
+    w_download_to corefonts "https://github.com/pushcx/corefonts/raw/master/times32.exe" db56595ec6ef5d3de5c24994f001f03b2a13e37cee27bc25c58f6f43e8f807ab
     w_try_cabextract -d "${W_TMP}" "${W_CACHE}"/corefonts/times32.exe
     w_try_cp_font_files "${W_TMP}" "${W_FONTSDIR_UNIX}" "Times*.TTF"
     w_register_font timesbd.ttf "Times New Roman Bold"
@@ -14796,7 +14832,7 @@ w_metadata trebuchet fonts \
 
 load_trebuchet()
 {
-    w_download_to corefonts "https://gh-proxy.com/https://github.com/pushcx/corefonts/raw/master/trebuc32.exe" 5a690d9bb8510be1b8b4fe49f1f2319651fe51bbe54775ddddd8ef0bd07fdac9
+    w_download_to corefonts "https://github.com/pushcx/corefonts/raw/master/trebuc32.exe" 5a690d9bb8510be1b8b4fe49f1f2319651fe51bbe54775ddddd8ef0bd07fdac9
     w_try_cabextract -d "${W_TMP}" "${W_CACHE}"/corefonts/trebuc32.exe
     w_try_cp_font_files "${W_TMP}" "${W_FONTSDIR_UNIX}" "[tT]rebuc*.ttf"
     w_register_font trebucbd.ttf "Trebuchet MS Bold"
@@ -14817,7 +14853,7 @@ w_metadata verdana fonts \
 
 load_verdana()
 {
-    w_download_to corefonts "https://gh-proxy.com/https://github.com/pushcx/corefonts/raw/master//verdan32.exe" c1cb61255e363166794e47664e2f21af8e3a26cb6346eb8d2ae2fa85dd5aad96
+    w_download_to corefonts "https://github.com/pushcx/corefonts/raw/master//verdan32.exe" c1cb61255e363166794e47664e2f21af8e3a26cb6346eb8d2ae2fa85dd5aad96
     w_try_cabextract -d "${W_TMP}" "${W_CACHE}"/corefonts/verdan32.exe
     w_try_cp_font_files "${W_TMP}" "${W_FONTSDIR_UNIX}" "Verdana*.TTF"
     w_register_font verdanab.ttf "Verdana Bold"
@@ -14838,7 +14874,7 @@ w_metadata webdings fonts \
 
 load_webdings()
 {
-    w_download_to corefonts "https://gh-proxy.com/https://github.com/pushcx/corefonts/raw/master/webdin32.exe" 64595b5abc1080fba8610c5c34fab5863408e806aafe84653ca8575bed17d75a
+    w_download_to corefonts "https://github.com/pushcx/corefonts/raw/master/webdin32.exe" 64595b5abc1080fba8610c5c34fab5863408e806aafe84653ca8575bed17d75a
     w_try_cabextract -d "${W_TMP}" "${W_CACHE}"/corefonts/webdin32.exe
     w_try_cp_font_files "${W_TMP}" "${W_FONTSDIR_UNIX}" "Webdings.TTF"
     w_register_font webdings.ttf "Webdings"
@@ -15253,7 +15289,7 @@ w_metadata sourcehansans fonts \
 
 load_sourcehansans()
 {
-    w_download "https://github.com/adobe-fonts/source-han-sans/releases/download/2.004R/SourceHanSans.ttc.zip" 6f59118a9adda5a7fe4e9e6bb538309f7e1d3c5411f9a9d32af32a79501b7e4f
+    w_download "https://github.com/adobe-fonts/source-han-sans/releases/download/2.004R/SourceHanSans.ttc.zip" 71762913042867bb1536b15e28f44e70cbb1e698eb14157ca0a63e8ef34ecb67
     w_try_unzip "${W_TMP}" "${W_CACHE}/${W_PACKAGE}/${file1}"
 
     # The official Adobe release ships a single SourceHanSans.ttc; the

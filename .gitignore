@@ -8,6 +8,9 @@ build/
 # Wine source (too large)
 winbridge/wine/
 
+# Component download cache (several GB)
+components/
+
 # IDE
 .vscode/
 .idea/

@@ -9,6 +9,31 @@ from typing import List, Optional, Dict
 from .config import Config
 from .wine import Wine
 
+# Environment type → display label (shared by every view showing a bottle)
+ENVIRONMENT_LABELS = {
+    "gaming": "游戏",
+    "office": "办公",
+    "custom": "自定义",
+}
+
+
+def environment_key(value: str) -> str:
+    """Normalise a stored environment value to one of the known keys.
+
+    Older bottles store the localised combo text (e.g.
+    "游戏/多媒体 (gaming)") instead of the bare key, so match by substring.
+    """
+    raw = (value or "").lower()
+    for key in ENVIRONMENT_LABELS:
+        if key in raw:
+            return key
+    return "custom"
+
+
+def environment_label(value: str) -> str:
+    """Display label for a stored environment value."""
+    return ENVIRONMENT_LABELS[environment_key(value)]
+
 
 class Bottle:
     """Represents a single Wine prefix / bottle."""
@@ -124,6 +149,38 @@ class Bottle:
     @property
     def installed_components(self) -> List[str]:
         return self._meta.get("installed_components", [])
+
+    @property
+    def shortcuts(self) -> List[Dict]:
+        """Remembered applications: name / target / source / icon.
+
+        Kept in metadata rather than re-scanned every time so a program
+        stays in the list after its Windows desktop shortcut is deleted.
+        """
+        return list(self._meta.get("shortcuts", []))
+
+    @shortcuts.setter
+    def shortcuts(self, value: List[Dict]):
+        self._meta["shortcuts"] = list(value)
+        self._save_meta()
+
+    def forget_shortcut(self, target: str) -> bool:
+        """Drop one shortcut from the bottle's list (program files untouched)."""
+        items = [s for s in self.shortcuts if s.get("target") != target]
+        if len(items) == len(self.shortcuts):
+            return False
+        self.shortcuts = items
+        return True
+
+    def rename_shortcut(self, target: str, new_name: str) -> bool:
+        """Rename a shortcut's display name (the program file is untouched)."""
+        items = self.shortcuts
+        for item in items:
+            if item.get("target") == target:
+                item["name"] = new_name
+                self.shortcuts = items
+                return True
+        return False
 
     @property
     def dll_overrides(self) -> Dict[str, str]:

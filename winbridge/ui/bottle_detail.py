@@ -3,8 +3,8 @@
 import os
 import subprocess
 from pathlib import Path
-from PyQt5.QtCore import Qt, pyqtSignal, QThread
-from PyQt5.QtGui import QFont, QColor
+from PyQt5.QtCore import Qt, QSize, pyqtSignal, QThread
+from PyQt5.QtGui import QColor, QIcon
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QGridLayout, QGroupBox, QTabWidget,
@@ -13,17 +13,18 @@ from PyQt5.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QCheckBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QMenu,
     QAction, QProgressBar, QSpacerItem, QSizePolicy,
-    QTreeWidget, QTreeWidgetItem, QGraphicsDropShadowEffect,
+    QTreeWidget, QTreeWidgetItem,
     QStyle,
 )
 
-from ..core.bottle import Bottle, BottleManager
+from ..core import shortcuts
+from ..core.bottle import (Bottle, BottleManager, ENVIRONMENT_LABELS,
+                           environment_key, environment_label)
 from ..core.wine import Wine
 from ..core.config import Config
 from ..core.download import ComponentManager
+from ..core.theme import ThemeManager
 from .dialogs import CreateBottleDialog, FirstRunDialog, TaskManagerDialog
-
-FONT_FAMILY = "'Segoe UI', 'Noto Sans CJK SC', 'Microsoft YaHei', 'WenQuanYi Micro Hei', sans-serif"
 
 
 class _RegistryLoadThread(QThread):
@@ -73,261 +74,42 @@ class _RegistryLoadThread(QThread):
         if not self._cancel and key_paths:
             self.loaded.emit(sorted(key_paths))
 
-# Light file dialog stylesheet
-FILE_DIALOG_STYLE = """
-    QFileDialog {
-        background: #ffffff;
-        color: #333333;
-    }
-    QFileDialog QLabel {
-        font-family: 'Segoe UI', sans-serif;
-        font-size: 12px;
-        color: #333333;
-    }
-    QFileDialog QLineEdit {
-        font-family: 'Segoe UI', sans-serif;
-        font-size: 12px;
-        border: 1px solid #cccccc;
-        border-radius: 3px;
-        padding: 4px 8px;
-        background: #ffffff;
-        color: #333333;
-    }
-    QFileDialog QComboBox {
-        font-family: 'Segoe UI', sans-serif;
-        font-size: 12px;
-        border: 1px solid #cccccc;
-        border-radius: 3px;
-        padding: 4px 8px;
-        background: #ffffff;
-        color: #333333;
-    }
-    QFileDialog QTreeView {
-        font-family: 'Segoe UI', sans-serif;
-        font-size: 12px;
-        background: #ffffff;
-        color: #333333;
-        border: 1px solid #e0e0e0;
-    }
-    QFileDialog QTreeView::item:selected {
-        background: #e8f0fe;
-        color: #1a1a2e;
-    }
-    QFileDialog QPushButton {
-        font-family: 'Segoe UI', sans-serif;
-        font-size: 12px;
-        border: 1px solid #cccccc;
-        border-radius: 3px;
-        padding: 5px 14px;
-        background: #f0f0f0;
-        color: #333333;
-    }
-    QFileDialog QPushButton:hover {
-        background: #e5e5e5;
-    }
-    QFileDialog QPushButton:pressed {
-        background: #d9d9d9;
-    }
-    QFileDialog QHeaderView::section {
-        font-family: 'Segoe UI', sans-serif;
-        font-size: 11px;
-        font-weight: 600;
-        background: #f5f5f5;
-        color: #444444;
-        border: 1px solid #e0e0e0;
-        padding: 4px 8px;
-    }
-"""
 
-# Common button styles
-BTN_DEFAULT = f"""
-    QPushButton {{
-        font-family: {FONT_FAMILY};
-        border: 1px solid #CBD5E0;
-        border-radius: 6px;
-        padding: 5px 14px;
-        font-size: 12px;
-        background: transparent;
-        color: #2D3748;
-    }}
-    QPushButton:hover {{
-        background: #EDF2F7;
-        border-color: #A0AEC0;
-    }}
-    QPushButton:pressed {{
-        background: #E2E8F0;
-    }}
-"""
+class _IconLoadThread(QThread):
+    """Extract program icons off the GUI thread.
 
-BTN_PRIMARY = f"""
-    QPushButton {{
-        font-family: {FONT_FAMILY};
-        border: 1px solid #2D3748;
-        border-radius: 6px;
-        padding: 5px 14px;
-        font-size: 12px;
-        font-weight: 600;
-        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                    stop:0 #2D3748, stop:1 #1A202C);
-        color: #FFFFFF;
-    }}
-    QPushButton:hover {{
-        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                    stop:0 #1A202C, stop:1 #171923);
-        border-color: #1A202C;
-    }}
-    QPushButton:pressed {{
-        background: #171923;
-        border-color: #171923;
-    }}
-    QPushButton:disabled {{
-        background: #CBD5E0;
-        border-color: #CBD5E0;
-        color: #A0AEC0;
-    }}
-"""
+    Parsing PE resources takes a few milliseconds per file, but a bottle can
+    hold hundreds of executables — doing it inline would stall the tab, so
+    icons are filled in as they become available.
+    """
+    icons_ready = pyqtSignal(dict)
 
-BTN_SUCCESS = f"""
-    QPushButton {{
-        font-family: {FONT_FAMILY};
-        border: 1px solid #38B2AC;
-        border-radius: 6px;
-        padding: 5px 14px;
-        font-size: 12px;
-        font-weight: 600;
-        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                    stop:0 #38B2AC, stop:1 #319795);
-        color: #FFFFFF;
-    }}
-    QPushButton:hover {{
-        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                    stop:0 #319795, stop:1 #2C7A7B);
-        border-color: #319795;
-    }}
-    QPushButton:pressed {{
-        background: #2C7A7B;
-        border-color: #2C7A7B;
-    }}
-    QPushButton:disabled {{
-        background: #CBD5E0;
-        border-color: #CBD5E0;
-        color: #A0AEC0;
-    }}
-"""
+    def __init__(self, entries: list, cache_dir):
+        super().__init__()
+        self._entries = list(entries)
+        self._cache_dir = Path(cache_dir)
+        self._cancel = False
 
-BTN_DANGER = f"""
-    QPushButton {{
-        font-family: {FONT_FAMILY};
-        border: 1px solid #FC8181;
-        border-radius: 6px;
-        padding: 5px 14px;
-        font-size: 12px;
-        font-weight: 600;
-        background: #FED7D7;
-        color: #C53030;
-    }}
-    QPushButton:hover {{
-        background: #FC8181;
-        border-color: #FC8181;
-        color: #FFFFFF;
-    }}
-    QPushButton:pressed {{
-        background: #E53E3E;
-        border-color: #E53E3E;
-    }}
-    QPushButton:disabled {{
-        background: #EDF2F7;
-        border-color: #E2E8F0;
-        color: #A0AEC0;
-    }}
-"""
+    def cancel(self):
+        self._cancel = True
 
-INPUT_STYLE = f"""
-    QLineEdit {{
-        font-family: {FONT_FAMILY};
-        border: 1px solid #cccccc;
-        border-radius: 3px;
-        padding: 5px 8px;
-        font-size: 12px;
-        background: #ffffff;
-        color: #333333;
-    }}
-    QLineEdit:focus {{
-        border-color: #4a90d9;
-    }}
-"""
-
-TEXTEDIT_STYLE = f"""
-    QTextEdit {{
-        font-family: {FONT_FAMILY};
-        border: 1px solid #cccccc;
-        border-radius: 3px;
-        padding: 5px 8px;
-        font-size: 12px;
-        background: #ffffff;
-        color: #333333;
-    }}
-    QTextEdit:focus {{
-        border-color: #4a90d9;
-    }}
-"""
-
-COMBO_STYLE = f"""
-    QComboBox {{
-        font-family: {FONT_FAMILY};
-        border: 1px solid #cccccc;
-        border-radius: 3px;
-        padding: 5px 8px;
-        font-size: 12px;
-        background: #ffffff;
-        color: #333333;
-    }}
-    QComboBox:focus {{ border-color: #4a90d9; }}
-    QComboBox::drop-down {{
-        border: none;
-        width: 22px;
-    }}
-    QComboBox QAbstractItemView {{
-        font-family: {FONT_FAMILY};
-        background: #ffffff;
-        border: 1px solid #cccccc;
-        selection-background-color: #4a90d9;
-        selection-color: #ffffff;
-    }}
-"""
-
-TABLE_STYLE = f"""
-    QTableWidget {{
-        font-family: {FONT_FAMILY};
-        border: 1px solid #ffffff;
-        border-radius: 3px;
-        font-size: 12px;
-        background: #ffffff;
-        gridline-color: #ffffff;
-        color: #333333;
-    }}
-    QTableWidget::item {{
-        padding: 4px 8px;
-    }}
-    QTableWidget::item:selected {{
-        background: #ffffff;
-        color: #2D3748;
-    }}
-    QHeaderView::section {{
-        font-family: {FONT_FAMILY};
-        background: #f0f0f0;
-        border: none;
-        border-bottom: 1px solid #cccccc;
-        padding: 5px 8px;
-        font-weight: 600;
-        font-size: 12px;
-        color: #444444;
-    }}
-"""
+    def run(self):
+        result = {}
+        for entry in self._entries:
+            if self._cancel:
+                return
+            target = entry.get("target", "")
+            if not target:
+                continue
+            icon = shortcuts.extract_icon(target, self._cache_dir)
+            if icon:
+                result[target] = icon
+        if result and not self._cancel:
+            self.icons_ready.emit(result)
 
 
 class BottleDetailWidget(QWidget):
-    """Detailed view of a single bottle — Windows native style."""
+    """Detailed view of a single bottle."""
 
     bottle_deleted = pyqtSignal(str)
     bottle_updated = pyqtSignal(str)
@@ -338,6 +120,7 @@ class BottleDetailWidget(QWidget):
         self.bottle_manager = BottleManager(self.config)
         self.wine = Wine(self.config.wine_path)
         self.component_manager = ComponentManager(self.config)
+        self.theme = ThemeManager(self.config)
         self.current_bottle = None
         self.setup_ui()
 
@@ -351,40 +134,34 @@ class BottleDetailWidget(QWidget):
         toolbar = QFrame()
         toolbar.setFixedHeight(44)
         toolbar.setObjectName("detailToolbar")
-        toolbar.setStyleSheet("")
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar_layout.setContentsMargins(16, 0, 16, 0)
         toolbar_layout.setSpacing(8)
 
         self.bottle_title = QLabel("选择容器以查看详情")
-        self.bottle_title.setStyleSheet(f"""
-            font-size: 15px;
-            font-weight: 600;
-            color: #1a1a2e;
-            font-family: {FONT_FAMILY};
-        """)
+        self.bottle_title.setObjectName("toolbarTitle")
         toolbar_layout.addWidget(self.bottle_title)
 
         toolbar_layout.addStretch()
 
         # Action buttons
         self.btn_run = QPushButton("运行")
-        self.btn_run.setStyleSheet(BTN_SUCCESS)
+        self.btn_run.setObjectName("btnPrimary")
         self.btn_run.clicked.connect(self.run_executable)
         toolbar_layout.addWidget(self.btn_run)
 
         self.btn_winecfg = QPushButton("winecfg")
-        self.btn_winecfg.setStyleSheet(BTN_DEFAULT)
+        self.btn_winecfg.setObjectName("btnDefault")
         self.btn_winecfg.clicked.connect(self.open_winecfg)
         toolbar_layout.addWidget(self.btn_winecfg)
 
         self.btn_taskmgr = QPushButton("任务管理器")
-        self.btn_taskmgr.setStyleSheet(BTN_DEFAULT)
+        self.btn_taskmgr.setObjectName("btnDefault")
         self.btn_taskmgr.clicked.connect(self.open_task_manager)
         toolbar_layout.addWidget(self.btn_taskmgr)
 
         self.btn_c_drive = QPushButton("前往C盘")
-        self.btn_c_drive.setStyleSheet(BTN_DEFAULT)
+        self.btn_c_drive.setObjectName("btnDefault")
         self.btn_c_drive.setIcon(self.style().standardIcon(QStyle.SP_DirIcon))
         self.btn_c_drive.clicked.connect(self.open_c_drive)
         toolbar_layout.addWidget(self.btn_c_drive)
@@ -392,12 +169,12 @@ class BottleDetailWidget(QWidget):
         toolbar_layout.addStretch()
 
         self.btn_rename = QPushButton("重命名")
-        self.btn_rename.setStyleSheet(BTN_DEFAULT)
+        self.btn_rename.setObjectName("btnDefault")
         self.btn_rename.clicked.connect(self.rename_bottle)
         toolbar_layout.addWidget(self.btn_rename)
 
         self.btn_delete = QPushButton("删除")
-        self.btn_delete.setStyleSheet(BTN_DANGER)
+        self.btn_delete.setObjectName("btnDanger")
         self.btn_delete.clicked.connect(self.delete_bottle)
         toolbar_layout.addWidget(self.btn_delete)
 
@@ -405,28 +182,6 @@ class BottleDetailWidget(QWidget):
 
         # === Content area with tabs ===
         self.tabs = QTabWidget()
-        self.tabs.setStyleSheet(f"""
-            QTabWidget::pane {{
-                border: none;
-            }}
-            QTabBar::tab {{
-                font-family: {FONT_FAMILY};
-                border: none;
-                border-bottom: 2px solid transparent;
-                padding: 7px 18px;
-                font-size: 12px;
-                color: #666666;
-                min-width: 60px;
-            }}
-            QTabBar::tab:selected {{
-                color: #4a90d9;
-                border-bottom: 2px solid #4a90d9;
-                font-weight: 600;
-            }}
-            QTabBar::tab:hover {{
-                color: #333333;
-            }}
-        """)
 
         # Tab 1: Overview
         self.overview_tab = self._create_overview_tab()
@@ -454,47 +209,30 @@ class BottleDetailWidget(QWidget):
 
         layout.addWidget(self.tabs, 1)
 
+        # Left-aligned table headers read better than the centred default
+        for table in (self.comp_table, self.dll_table, self.reg_value_table):
+            table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
         # Disable controls initially
         self.set_controls_enabled(False)
 
-    def _create_info_card(self, title: str, value: str, color: str = "#38B2AC") -> QFrame:
-        """Create an info card widget."""
+    def _create_info_card(self, title: str, value: str) -> QFrame:
+        """Create a metric card for the overview row."""
         card = QFrame()
-        card.setFixedSize(210, 80)
         card.setObjectName("infoCard")
-        card.setStyleSheet(f"""
-            QFrame {{
-                background: #FFFFFF;
-                border: 1px solid #E2E8F0;
-                border-radius: 10px;
-            }}
-        """)
-        # Soft drop shadow for the card
-        shadow = QGraphicsDropShadowEffect(card)
-        shadow.setBlurRadius(12)
-        shadow.setOffset(0, 2)
-        shadow.setColor(QColor(45, 55, 72, 40))
-        card.setGraphicsEffect(shadow)
+        card.setMinimumHeight(70)
+        card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 10, 14, 10)
-        layout.setSpacing(5)
+        layout.setContentsMargins(14, 11, 14, 11)
+        layout.setSpacing(4)
 
         title_label = QLabel(title)
-        title_label.setStyleSheet(f"""
-            font-size: 11px;
-            color: #718096;
-            font-family: {FONT_FAMILY};
-        """)
+        title_label.setObjectName("metricKey")
         layout.addWidget(title_label)
 
         value_label = QLabel(value)
-        value_label.setStyleSheet(f"""
-            font-size: 15px;
-            font-weight: 600;
-            color: {color};
-            font-family: {FONT_FAMILY};
-        """)
+        value_label.setObjectName("metricValue")
         value_label.setWordWrap(True)
         layout.addWidget(value_label)
 
@@ -503,73 +241,50 @@ class BottleDetailWidget(QWidget):
     def _create_overview_tab(self) -> QWidget:
         """Create the overview tab."""
         tab = QWidget()
-        tab.setStyleSheet("")
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(16)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(14)
 
         # Info cards row
         cards_layout = QHBoxLayout()
-        cards_layout.setSpacing(12)
+        cards_layout.setSpacing(10)
 
-        self.card_arch = self._create_info_card("架构", "-", "#3498db")
+        self.card_arch = self._create_info_card("架构", "-")
         cards_layout.addWidget(self.card_arch)
 
-        self.card_winver = self._create_info_card("Windows 版本", "-", "#2ecc71")
+        self.card_winver = self._create_info_card("Windows 版本", "-")
         cards_layout.addWidget(self.card_winver)
 
-        self.card_env = self._create_info_card("环境", "-", "#e74c3c")
+        self.card_env = self._create_info_card("环境", "-")
         cards_layout.addWidget(self.card_env)
 
-        self.card_size = self._create_info_card("大小", "-", "#9b59b6")
+        self.card_size = self._create_info_card("大小", "-")
         cards_layout.addWidget(self.card_size)
 
-        self.card_created = self._create_info_card("创建时间", "-", "#f39c12")
+        self.card_created = self._create_info_card("创建时间", "-")
         cards_layout.addWidget(self.card_created)
 
-        cards_layout.addStretch()
         layout.addLayout(cards_layout)
-
-        # Separator line
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setObjectName("detailSep")
-        sep.setStyleSheet("max-height: 1px;")
-        layout.addWidget(sep)
 
         # Description section (card)
         desc_card = QFrame()
-        desc_card.setStyleSheet(f"""
-            QFrame {{
-                background: #FFFFFF;
-                border: 1px solid #E2E8F0;
-                border-radius: 10px;
-                padding: 14px;
-            }}
-        """)
+        desc_card.setObjectName("card")
         desc_card_layout = QVBoxLayout(desc_card)
         desc_card_layout.setContentsMargins(16, 14, 16, 14)
         desc_card_layout.setSpacing(8)
 
         desc_header = QLabel("描述")
-        desc_header.setStyleSheet(f"""
-            font-size: 12px;
-            font-weight: 600;
-            color: #2D3748;
-            font-family: {FONT_FAMILY};
-        """)
+        desc_header.setObjectName("sectionTitle")
         desc_card_layout.addWidget(desc_header)
 
         self.description_text = QTextEdit()
         self.description_text.setPlaceholderText("添加容器描述...")
         self.description_text.setMaximumHeight(80)
-        self.description_text.setStyleSheet(TEXTEDIT_STYLE)
         desc_card_layout.addWidget(self.description_text)
 
         btn_save_desc = QPushButton("保存描述")
-        btn_save_desc.setStyleSheet(BTN_DEFAULT)
+        btn_save_desc.setObjectName("btnDefault")
         btn_save_desc.clicked.connect(self.save_description)
-        btn_save_desc.setFixedWidth(100)
         desc_card_layout.addWidget(btn_save_desc, 0, Qt.AlignLeft)
         layout.addWidget(desc_card)
 
@@ -577,50 +292,20 @@ class BottleDetailWidget(QWidget):
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.HLine)
         sep2.setObjectName("detailSep")
-        sep2.setStyleSheet("max-height: 1px;")
         layout.addWidget(sep2)
 
         # Installed components (card)
         comp_card = QFrame()
-        comp_card.setStyleSheet(f"""
-            QFrame {{
-                background: #FFFFFF;
-                border: 1px solid #E2E8F0;
-                border-radius: 10px;
-                padding: 14px;
-            }}
-        """)
         comp_card_layout = QVBoxLayout(comp_card)
         comp_card_layout.setContentsMargins(16, 14, 16, 14)
         comp_card_layout.setSpacing(8)
 
         comp_header = QLabel("已安装组件")
-        comp_header.setStyleSheet(f"""
-            font-size: 12px;
-            font-weight: 600;
-            color: #2D3748;
-            font-family: {FONT_FAMILY};
-        """)
+        comp_header.setObjectName("sectionTitle")
         comp_card_layout.addWidget(comp_header)
 
         self.components_list = QListWidget()
-        self.components_list.setStyleSheet(f"""
-            QListWidget {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #E2E8F0;
-                border-radius: 8px;
-                background: #FFFFFF;
-                padding: 4px;
-                color: #2D3748;
-            }}
-            QListWidget::item {{
-                padding: 4px 8px;
-                font-size: 12px;
-            }}
-            QListWidget::item:hover {{
-                background: #EDF2F7;
-            }}
-        """)
+        self.components_list.setObjectName("plainList")
         self.components_list.setMaximumHeight(120)
         comp_card_layout.addWidget(self.components_list)
         layout.addWidget(comp_card)
@@ -631,7 +316,6 @@ class BottleDetailWidget(QWidget):
     def _create_programs_tab(self) -> QWidget:
         """Create the programs tab."""
         tab = QWidget()
-        tab.setStyleSheet("")
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(16)
@@ -639,24 +323,12 @@ class BottleDetailWidget(QWidget):
         # Quick launch section
         section = QFrame()
         section.setObjectName("detailSection")
-        section.setStyleSheet(f"""
-            QFrame {{
-                border: 1px solid #e0e0e0;
-                border-radius: 4px;
-                padding: 16px;
-            }}
-        """)
         section_layout = QVBoxLayout(section)
         section_layout.setSpacing(10)
         section_layout.setContentsMargins(16, 16, 16, 16)
 
         section_title = QLabel("快速启动")
-        section_title.setStyleSheet(f"""
-            font-size: 12px;
-            font-weight: 600;
-            color: #333333;
-            font-family: {FONT_FAMILY};
-        """)
+        section_title.setObjectName("sectionTitle")
         section_layout.addWidget(section_title)
 
         # File picker
@@ -664,11 +336,10 @@ class BottleDetailWidget(QWidget):
         file_layout.setSpacing(8)
         self.exe_path = QLineEdit()
         self.exe_path.setPlaceholderText("选择要运行的 .exe 文件...")
-        self.exe_path.setStyleSheet(INPUT_STYLE)
         file_layout.addWidget(self.exe_path, 1)
 
         btn_browse = QPushButton("浏览...")
-        btn_browse.setStyleSheet(BTN_DEFAULT)
+        btn_browse.setObjectName("btnDefault")
         btn_browse.clicked.connect(self.browse_exe)
         file_layout.addWidget(btn_browse)
 
@@ -679,11 +350,10 @@ class BottleDetailWidget(QWidget):
         args_layout.setSpacing(8)
         self.exe_args = QLineEdit()
         self.exe_args.setPlaceholderText("命令行参数 (可选)")
-        self.exe_args.setStyleSheet(INPUT_STYLE)
         args_layout.addWidget(self.exe_args, 1)
 
         btn_run_exe = QPushButton("运行")
-        btn_run_exe.setStyleSheet(BTN_PRIMARY)
+        btn_run_exe.setObjectName("btnPrimary")
         btn_run_exe.clicked.connect(self.run_executable)
         btn_run_exe.setFixedWidth(80)
         args_layout.addWidget(btn_run_exe)
@@ -695,44 +365,25 @@ class BottleDetailWidget(QWidget):
         # Shortcuts section
         shortcuts_section = QFrame()
         shortcuts_section.setObjectName("detailSection")
-        shortcuts_section.setStyleSheet(f"""
-            QFrame {{
-                border: 1px solid #e0e0e0;
-                border-radius: 4px;
-                padding: 16px;
-            }}
-        """)
         shortcuts_layout = QVBoxLayout(shortcuts_section)
         shortcuts_layout.setSpacing(8)
         shortcuts_layout.setContentsMargins(16, 16, 16, 16)
 
         shortcuts_title = QLabel("快捷方式")
-        shortcuts_title.setStyleSheet(f"""
-            font-size: 12px;
-            font-weight: 600;
-            color: #333333;
-            font-family: {FONT_FAMILY};
-        """)
+        shortcuts_title.setObjectName("sectionTitle")
         shortcuts_layout.addWidget(shortcuts_title)
 
         self.shortcuts_list = QListWidget()
-        self.shortcuts_list.setStyleSheet(f"""
-            QListWidget {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                background: #ffffff;
-                color: #333333;
-            }}
-            QListWidget::item {{
-                padding: 6px 8px;
-                font-size: 12px;
-            }}
-            QListWidget::item:hover {{
-                background: #f5f5f5;
-            }}
-        """)
+        self.shortcuts_list.setObjectName("plainList")
+        self.shortcuts_list.setIconSize(QSize(26, 26))
+        self.shortcuts_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.shortcuts_list.customContextMenuRequested.connect(self._shortcut_menu)
+        self.shortcuts_list.itemDoubleClicked.connect(self._run_shortcut)
         shortcuts_layout.addWidget(self.shortcuts_list)
+
+        shortcuts_hint = QLabel("双击运行 · 右键可打开、重命名或添加到桌面")
+        shortcuts_hint.setObjectName("hint")
+        shortcuts_layout.addWidget(shortcuts_hint)
 
         layout.addWidget(shortcuts_section, 1)
         return tab
@@ -740,7 +391,6 @@ class BottleDetailWidget(QWidget):
     def _create_components_tab(self) -> QWidget:
         """Create the components tab."""
         tab = QWidget()
-        tab.setStyleSheet("")
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(16)
@@ -748,24 +398,12 @@ class BottleDetailWidget(QWidget):
         # Components section
         section = QFrame()
         section.setObjectName("detailSection")
-        section.setStyleSheet(f"""
-            QFrame {{
-                border: 1px solid #e0e0e0;
-                border-radius: 4px;
-                padding: 16px;
-            }}
-        """)
         section_layout = QVBoxLayout(section)
         section_layout.setSpacing(10)
         section_layout.setContentsMargins(16, 16, 16, 16)
 
         section_title = QLabel("可用组件")
-        section_title.setStyleSheet(f"""
-            font-size: 12px;
-            font-weight: 600;
-            color: #333333;
-            font-family: {FONT_FAMILY};
-        """)
+        section_title.setObjectName("sectionTitle")
         section_layout.addWidget(section_title)
 
         # Component table
@@ -777,24 +415,26 @@ class BottleDetailWidget(QWidget):
         self.comp_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.comp_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.comp_table.setSelectionMode(QTableWidget.SingleSelection)
-        self.comp_table.setStyleSheet(TABLE_STYLE)
+        self.comp_table.verticalHeader().setVisible(False)
+        self.comp_table.setShowGrid(False)
+        self.comp_table.setAlternatingRowColors(True)
         section_layout.addWidget(self.comp_table)
 
         # Buttons
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(8)
         self.btn_install = QPushButton("安装选中组件")
-        self.btn_install.setStyleSheet(BTN_PRIMARY)
+        self.btn_install.setObjectName("btnPrimary")
         self.btn_install.clicked.connect(self.install_component)
         btn_layout.addWidget(self.btn_install)
 
         self.btn_uninstall = QPushButton("卸载选中组件")
-        self.btn_uninstall.setStyleSheet(BTN_DANGER)
+        self.btn_uninstall.setObjectName("btnDanger")
         self.btn_uninstall.clicked.connect(self.uninstall_component)
         btn_layout.addWidget(self.btn_uninstall)
 
         self.btn_refresh_comp = QPushButton("刷新")
-        self.btn_refresh_comp.setStyleSheet(BTN_DEFAULT)
+        self.btn_refresh_comp.setObjectName("btnDefault")
         self.btn_refresh_comp.clicked.connect(self.refresh_components)
         btn_layout.addWidget(self.btn_refresh_comp)
 
@@ -806,22 +446,7 @@ class BottleDetailWidget(QWidget):
         # Install progress
         self.comp_progress = QProgressBar()
         self.comp_progress.setVisible(False)
-        self.comp_progress.setStyleSheet(f"""
-            QProgressBar {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                text-align: center;
-                font-size: 10px;
-                background: #ffffff;
-                color: #333333;
-                height: 18px;
-            }}
-            QProgressBar::chunk {{
-                background: #4a90d9;
-                border-radius: 2px;
-            }}
-        """)
+        self.comp_progress.setObjectName("progressLabeled")
         layout.addWidget(self.comp_progress)
 
         layout.addStretch()
@@ -830,7 +455,6 @@ class BottleDetailWidget(QWidget):
     def _create_config_tab(self) -> QWidget:
         """Create the configuration tab."""
         tab = QWidget()
-        tab.setStyleSheet("")
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(16)
@@ -838,35 +462,19 @@ class BottleDetailWidget(QWidget):
         # Wine configuration section
         section = QFrame()
         section.setObjectName("detailSection")
-        section.setStyleSheet(f"""
-            QFrame {{
-                border: 1px solid #e0e0e0;
-                border-radius: 4px;
-                padding: 16px;
-            }}
-        """)
         section_layout = QVBoxLayout(section)
         section_layout.setSpacing(12)
         section_layout.setContentsMargins(16, 16, 16, 16)
 
         section_title = QLabel("Wine 设置")
-        section_title.setStyleSheet(f"""
-            font-size: 12px;
-            font-weight: 600;
-            color: #333333;
-            font-family: {FONT_FAMILY};
-        """)
+        section_title.setObjectName("sectionTitle")
         section_layout.addWidget(section_title)
 
         # Windows version
         ver_layout = QHBoxLayout()
         ver_layout.setSpacing(8)
-        ver_label = QLabel("Windows 版本:")
-        ver_label.setStyleSheet(f"""
-            font-size: 12px;
-            color: #333333;
-            font-family: {FONT_FAMILY};
-        """)
+        ver_label = QLabel("Windows 版本")
+        ver_label.setObjectName("fieldLabel")
         ver_layout.addWidget(ver_label)
 
         self.winver_combo = QComboBox()
@@ -875,12 +483,11 @@ class BottleDetailWidget(QWidget):
             "win2003", "winxp", "win2k", "winme", "win98",
             "win95"
         ])
-        self.winver_combo.setStyleSheet(COMBO_STYLE)
         self.winver_combo.setFixedWidth(180)
         ver_layout.addWidget(self.winver_combo)
 
         btn_apply_winver = QPushButton("应用")
-        btn_apply_winver.setStyleSheet(BTN_DEFAULT)
+        btn_apply_winver.setObjectName("btnDefault")
         btn_apply_winver.clicked.connect(self.apply_windows_version)
         ver_layout.addWidget(btn_apply_winver)
         ver_layout.addStretch()
@@ -890,17 +497,11 @@ class BottleDetailWidget(QWidget):
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
         sep.setObjectName("detailSep")
-        sep.setStyleSheet("max-height: 1px;")
         section_layout.addWidget(sep)
 
         # DLL section
         dll_header = QLabel("DLL 覆盖")
-        dll_header.setStyleSheet(f"""
-            font-size: 12px;
-            font-weight: 600;
-            color: #333333;
-            font-family: {FONT_FAMILY};
-        """)
+        dll_header.setObjectName("sectionTitle")
         section_layout.addWidget(dll_header)
 
         self.dll_table = QTableWidget()
@@ -908,19 +509,20 @@ class BottleDetailWidget(QWidget):
         self.dll_table.setHorizontalHeaderLabels(["DLL", "模式"])
         self.dll_table.horizontalHeader().setStretchLastSection(True)
         self.dll_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.dll_table.setStyleSheet(TABLE_STYLE)
         self.dll_table.setMaximumHeight(150)
+        self.dll_table.verticalHeader().setVisible(False)
+        self.dll_table.setShowGrid(False)
         section_layout.addWidget(self.dll_table)
 
         dll_btn_layout = QHBoxLayout()
         dll_btn_layout.setSpacing(8)
         btn_add_dll = QPushButton("添加")
-        btn_add_dll.setStyleSheet(BTN_DEFAULT)
+        btn_add_dll.setObjectName("btnDefault")
         btn_add_dll.clicked.connect(self.add_dll_override)
         dll_btn_layout.addWidget(btn_add_dll)
 
         btn_remove_dll = QPushButton("删除")
-        btn_remove_dll.setStyleSheet(BTN_DEFAULT)
+        btn_remove_dll.setObjectName("btnDefault")
         btn_remove_dll.clicked.connect(self.remove_dll_override)
         dll_btn_layout.addWidget(btn_remove_dll)
         dll_btn_layout.addStretch()
@@ -930,37 +532,27 @@ class BottleDetailWidget(QWidget):
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.HLine)
         sep2.setObjectName("detailSep")
-        sep2.setStyleSheet("max-height: 1px;")
         section_layout.addWidget(sep2)
 
         # Environment section
         env_header = QLabel("环境配置")
-        env_header.setStyleSheet(f"""
-            font-size: 12px;
-            font-weight: 600;
-            color: #333333;
-            font-family: {FONT_FAMILY};
-        """)
+        env_header.setObjectName("sectionTitle")
         section_layout.addWidget(env_header)
 
         env_layout = QHBoxLayout()
         env_layout.setSpacing(8)
-        env_label = QLabel("环境类型:")
-        env_label.setStyleSheet(f"""
-            font-size: 12px;
-            color: #333333;
-            font-family: {FONT_FAMILY};
-        """)
+        env_label = QLabel("环境类型")
+        env_label.setObjectName("fieldLabel")
         env_layout.addWidget(env_label)
 
         self.env_combo = QComboBox()
-        self.env_combo.addItems(["gaming", "office", "custom"])
-        self.env_combo.setStyleSheet(COMBO_STYLE)
+        for key, label in ENVIRONMENT_LABELS.items():
+            self.env_combo.addItem(label, key)
         self.env_combo.setFixedWidth(180)
         env_layout.addWidget(self.env_combo)
 
         btn_apply_env = QPushButton("应用")
-        btn_apply_env.setStyleSheet(BTN_DEFAULT)
+        btn_apply_env.setObjectName("btnDefault")
         btn_apply_env.clicked.connect(self.apply_environment)
         env_layout.addWidget(btn_apply_env)
         env_layout.addStretch()
@@ -973,7 +565,6 @@ class BottleDetailWidget(QWidget):
     def _create_registry_tab(self) -> QWidget:
         """Create the registry tab with built-in tree viewer."""
         tab = QWidget()
-        tab.setStyleSheet("")
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(12)
@@ -983,51 +574,43 @@ class BottleDetailWidget(QWidget):
         toolbar.setSpacing(8)
 
         lbl = QLabel("注册表浏览器")
-        lbl.setStyleSheet(f"""
-            font-size: 13px; font-weight: 600; color: #333333;
-            font-family: {FONT_FAMILY};
-        """)
+        lbl.setObjectName("sectionTitle")
         toolbar.addWidget(lbl)
 
         btn_refresh_reg = QPushButton("刷新")
-        btn_refresh_reg.setStyleSheet(BTN_DEFAULT)
+        btn_refresh_reg.setObjectName("btnDefault")
         btn_refresh_reg.setFixedWidth(80)
         btn_refresh_reg.clicked.connect(self._refresh_registry_tree)
         toolbar.addWidget(btn_refresh_reg)
 
         btn_new_folder = QPushButton("新建文件夹")
-        btn_new_folder.setStyleSheet(BTN_PRIMARY)
+        btn_new_folder.setObjectName("btnDefault")
         btn_new_folder.clicked.connect(lambda: self._add_registry_key(None))
         toolbar.addWidget(btn_new_folder)
 
         btn_new32 = QPushButton("新建项(32位)")
-        btn_new32.setStyleSheet(BTN_DEFAULT)
+        btn_new32.setObjectName("btnDefault")
         btn_new32.clicked.connect(lambda: self._add_registry_key("32"))
         toolbar.addWidget(btn_new32)
 
         btn_new64 = QPushButton("新建项(64位)")
-        btn_new64.setStyleSheet(BTN_DEFAULT)
+        btn_new64.setObjectName("btnDefault")
         btn_new64.clicked.connect(lambda: self._add_registry_key("64"))
         toolbar.addWidget(btn_new64)
 
         btn_del_key = QPushButton("删除选中项")
-        btn_del_key.setStyleSheet(BTN_DANGER)
+        btn_del_key.setObjectName("btnDanger")
         btn_del_key.clicked.connect(self._delete_registry_key)
         toolbar.addWidget(btn_del_key)
 
         self.reg_source_label = QLabel("浏览: user.reg + system.reg")
-        self.reg_source_label.setStyleSheet(f"""
-            font-size: 11px; color: #999999; font-family: {FONT_FAMILY};
-        """)
+        self.reg_source_label.setObjectName("hint")
         toolbar.addWidget(self.reg_source_label)
 
         # Loading indicator — shown while the tree is being parsed in the
         # background so the UI never freezes.
         self.reg_loading_label = QLabel("注册表正在加载中...")
-        self.reg_loading_label.setStyleSheet(f"""
-            font-size: 11px; font-weight: 600; color: #ED8936;
-            font-family: {FONT_FAMILY};
-        """)
+        self.reg_loading_label.setObjectName("statusWarn")
         self.reg_loading_label.setVisible(False)
         toolbar.addWidget(self.reg_loading_label)
 
@@ -1040,23 +623,6 @@ class BottleDetailWidget(QWidget):
         # Registry tree
         self.reg_tree = QTreeWidget()
         self.reg_tree.setHeaderLabels(["注册表项"])
-        self.reg_tree.setStyleSheet(f"""
-            QTreeWidget {{
-                font-family: {FONT_FAMILY};
-                font-size: 12px;
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                background: #ffffff;
-                color: #333333;
-            }}
-            QTreeWidget::item {{
-                padding: 3px 6px;
-            }}
-            QTreeWidget::item:selected {{
-                background: #4a90d9;
-                color: #ffffff;
-            }}
-        """)
         self.reg_tree.setMinimumWidth(280)
         self.reg_tree.itemClicked.connect(self._on_reg_item_clicked)
         splitter.addWidget(self.reg_tree)
@@ -1068,10 +634,7 @@ class BottleDetailWidget(QWidget):
         value_layout.setSpacing(8)
 
         self.reg_key_path = QLabel("")
-        self.reg_key_path.setStyleSheet(f"""
-            font-size: 11px; font-weight: 600; color: #666666;
-            font-family: {FONT_FAMILY};
-        """)
+        self.reg_key_path.setObjectName("mono")
         self.reg_key_path.setWordWrap(True)
         value_layout.addWidget(self.reg_key_path)
 
@@ -1081,28 +644,6 @@ class BottleDetailWidget(QWidget):
         self.reg_value_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.reg_value_table.setAlternatingRowColors(False)
         self.reg_value_table.verticalHeader().setVisible(False)
-        self.reg_value_table.setStyleSheet(f"""
-            QTableWidget {{
-                font-family: {FONT_FAMILY};
-                font-size: 12px;
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                background: #ffffff;
-                color: #333333;
-            }}
-            QTableWidget::item {{
-                padding: 2px 6px;
-            }}
-            QHeaderView::section {{
-                font-family: {FONT_FAMILY};
-                font-size: 11px;
-                font-weight: 600;
-                background: #f5f5f5;
-                color: #444444;
-                border: 1px solid #cccccc;
-                padding: 4px 8px;
-            }}
-        """)
         value_layout.addWidget(self.reg_value_table, 1)
 
         splitter.addWidget(self.reg_value_widget)
@@ -1112,36 +653,25 @@ class BottleDetailWidget(QWidget):
         # Import .reg file section
         section = QFrame()
         section.setObjectName("detailSection")
-        section.setStyleSheet(f"""
-            QFrame {{
-                border: 1px solid #e0e0e0;
-                border-radius: 4px;
-                padding: 12px;
-            }}
-        """)
         section_layout = QHBoxLayout(section)
         section_layout.setSpacing(8)
         section_layout.setContentsMargins(12, 8, 12, 8)
 
-        section_title = QLabel("导入 .reg 文件:")
-        section_title.setStyleSheet(f"""
-            font-size: 12px; font-weight: 600; color: #333333;
-            font-family: {FONT_FAMILY};
-        """)
+        section_title = QLabel("导入 .reg 文件")
+        section_title.setObjectName("sectionTitle")
         section_layout.addWidget(section_title)
 
         self.reg_file_path = QLineEdit()
         self.reg_file_path.setPlaceholderText("选择 .reg 文件...")
-        self.reg_file_path.setStyleSheet(INPUT_STYLE)
         section_layout.addWidget(self.reg_file_path, 1)
 
         btn_browse_reg = QPushButton("浏览...")
-        btn_browse_reg.setStyleSheet(BTN_DEFAULT)
+        btn_browse_reg.setObjectName("btnDefault")
         btn_browse_reg.clicked.connect(self.browse_reg_file)
         section_layout.addWidget(btn_browse_reg)
 
         btn_import_reg = QPushButton("导入")
-        btn_import_reg.setStyleSheet(BTN_PRIMARY)
+        btn_import_reg.setObjectName("btnPrimary")
         btn_import_reg.clicked.connect(self.import_reg_file)
         section_layout.addWidget(btn_import_reg)
 
@@ -1416,15 +946,15 @@ class BottleDetailWidget(QWidget):
 
         # Update overview cards
         self._update_info_card(self.card_arch, "架构",
-                               bottle.arch.replace("win", "Win"), "#3498db")
+                               bottle.arch.replace("win", "Win"))
         self._update_info_card(self.card_winver, "Windows 版本",
-                               bottle.windows_version, "#2ecc71")
+                               bottle.windows_version)
         self._update_info_card(self.card_env, "环境",
-                               bottle.environment.capitalize(), "#e74c3c")
+                               environment_label(bottle.environment))
         self._update_info_card(self.card_size, "大小",
-                               bottle.drive_c_size, "#9b59b6")
+                               bottle.drive_c_size)
         self._update_info_card(self.card_created, "创建时间",
-                               bottle.created[:10], "#f39c12")
+                               bottle.created[:10])
 
         # Description
         self.description_text.setPlainText(bottle.description)
@@ -1441,7 +971,7 @@ class BottleDetailWidget(QWidget):
         idx = self.winver_combo.findText(bottle.windows_version)
         if idx >= 0:
             self.winver_combo.setCurrentIndex(idx)
-        idx = self.env_combo.findText(bottle.environment)
+        idx = self.env_combo.findData(environment_key(bottle.environment))
         if idx >= 0:
             self.env_combo.setCurrentIndex(idx)
 
@@ -1459,19 +989,12 @@ class BottleDetailWidget(QWidget):
         # Registry tree
         self._registry_loaded = False  # Reset so it re-loads on next visit
 
-    def _update_info_card(self, card: QFrame, title: str, value: str,
-                          color: str):
+    def _update_info_card(self, card: QFrame, title: str, value: str):
         """Update an info card."""
         labels = card.findChildren(QLabel)
         if len(labels) >= 2:
             labels[0].setText(title)
             labels[1].setText(value)
-            labels[1].setStyleSheet(f"""
-                font-size: 15px;
-                font-weight: 600;
-                color: {color};
-                font-family: {FONT_FAMILY};
-            """)
 
     def _load_dll_overrides(self):
         """Load DLL overrides into the table."""
@@ -1486,75 +1009,196 @@ class BottleDetailWidget(QWidget):
             self.dll_table.setItem(row, 1, QTableWidgetItem(mode))
 
     def _load_shortcuts(self):
-        """Load program shortcuts from the bottle and Linux desktop.
+        """Load this bottle's applications into the list.
 
-        Deduplicates by file basename: when the same .lnk exists both on
-        the bottle's Desktop and in its Start Menu, only one entry is
-        shown (Desktop wins, since that is what the user actually sees
-        inside the Windows desktop).
+        The stored list is merged with a fresh scan of the bottle only, so
+        shortcuts survive deleting the Windows ``.lnk`` and nothing from the
+        host desktop ever leaks in.
         """
         self.shortcuts_list.clear()
-        found = 0
-        # Map basename -> absolute path; first occurrence wins.
-        seen = {}
+        self._shortcut_items = {}
+        # Drop a previous icon pass before starting another one
+        thread = getattr(self, "_icon_thread", None)
+        if thread is not None and thread.isRunning():
+            thread.cancel()
+            thread.wait(1000)
+        if not self.current_bottle:
+            return
 
-        def _add(lnk_path: Path):
-            nonlocal found
-            name = lnk_path.name
-            if name in seen:
-                return
-            seen[name] = str(lnk_path)
+        discovered = shortcuts.discover(self.current_bottle.path)
+        merged, changed = shortcuts.merge(self.current_bottle.shortcuts, discovered)
+        if changed:
+            self.current_bottle.shortcuts = merged
+
+        fallback = self.style().standardIcon(QStyle.SP_FileIcon)
+        muted = QColor(self.theme.get("text_muted"))
+        for entry in merged:
+            target = entry.get("target", "")
+            name = entry.get("name") or Path(target).stem
             item = QListWidgetItem(name)
-            item.setData(Qt.UserRole, str(lnk_path))
+            item.setData(Qt.UserRole, target)
+            icon_path = entry.get("icon") or ""
+            has_icon = bool(icon_path) and Path(icon_path).exists()
+            item.setIcon(QIcon(icon_path) if has_icon else fallback)
+            item.setSizeHint(QSize(0, 36))
+            if Path(target).exists():
+                item.setToolTip(target)
+            else:
+                item.setForeground(muted)
+                item.setToolTip(f"文件不存在：{target}")
             self.shortcuts_list.addItem(item)
-            found += 1
+            self._shortcut_items[target] = item
 
-        if self.current_bottle:
-            drive_c = self.current_bottle.path / "drive_c"
-            if drive_c.exists():
-                # Desktop dirs first (higher priority for dedup)
-                user = os.environ.get("USER", "root")
-                desktop_dirs = [
-                    drive_c / "users" / "Public" / "Desktop",
-                    drive_c / "users" / "root" / "Desktop",
-                    drive_c / "users" / "winuser" / "Desktop",
-                    drive_c / "users" / user / "Desktop",
-                ]
-                for d in desktop_dirs:
-                    if d.exists():
-                        for exe in d.glob("*.lnk"):
-                            _add(exe)
+        if not merged:
+            placeholder = QListWidgetItem("此容器中还没有可启动的程序")
+            placeholder.setFlags(Qt.NoItemFlags)
+            placeholder.setForeground(muted)
+            self.shortcuts_list.addItem(placeholder)
+            return
 
-                # Then Start Menu (recursive) — skipped if already on Desktop
-                start_menu = drive_c / "users" / user / "Start Menu"
-                if start_menu.exists():
-                    for exe in start_menu.glob("**/*.lnk"):
-                        _add(exe)
+        pending = [e for e in merged
+                   if not (e.get("icon") and Path(e["icon"]).exists())]
+        if pending:
+            self._icon_bottle = self.current_bottle.name
+            self._icon_thread = _IconLoadThread(
+                pending, self.config.cache_dir / "icons")
+            self._icon_thread.icons_ready.connect(self._on_icons_ready)
+            self._icon_thread.start()
 
-                # Also scan Program Files for direct .exe shortcuts
-                for pf in [drive_c / "Program Files (x86)",
-                           drive_c / "Program Files"]:
-                    if pf.exists():
-                        for exe in pf.glob("**/*.exe"):
-                            _add(exe)
+    def _on_icons_ready(self, icons: dict):
+        """Attach icons extracted in the background and remember them."""
+        if not icons or not self.current_bottle:
+            return
+        # Ignore results that arrived after switching to another bottle
+        if getattr(self, "_icon_bottle", None) != self.current_bottle.name:
+            return
+        entries = self.current_bottle.shortcuts
+        for entry in entries:
+            icon = icons.get(entry.get("target"))
+            if not icon:
+                continue
+            entry["icon"] = icon
+            item = self._shortcut_items.get(entry["target"])
+            if item is not None:
+                item.setIcon(QIcon(icon))
+        self.current_bottle.shortcuts = entries
 
-        # Also scan the Linux desktop for .lnk files
-        for desktop_dir in [Path.home() / "桌面", Path.home() / "Desktop"]:
-            if desktop_dir.exists():
-                for lnk in desktop_dir.glob("*.lnk"):
-                    _add(lnk)
+    def _shortcut_menu(self, pos):
+        """Right-click menu: open, rename, add to desktop, uninstall."""
+        item = self.shortcuts_list.itemAt(pos)
+        target = item.data(Qt.UserRole) if item else None
+        if not target:
+            return
+        menu = QMenu(self.shortcuts_list)
+        action_open = menu.addAction("打开")
+        action_rename = menu.addAction("重命名")
+        action_desktop = menu.addAction("添加到桌面")
+        menu.addSeparator()
+        action_uninstall = menu.addAction("卸载")
+        chosen = menu.exec_(self.shortcuts_list.mapToGlobal(pos))
+        if chosen is action_open:
+            self._run_shortcut(item)
+        elif chosen is action_rename:
+            self._rename_shortcut(item)
+        elif chosen is action_desktop:
+            self._shortcut_to_desktop(item)
+        elif chosen is action_uninstall:
+            self._uninstall_shortcut(item)
 
-        if found == 0:
-            self.shortcuts_list.addItem("(暂无快捷方式，运行程序后自动生成)")
+    def _uninstall_shortcut(self, item):
+        """Delete a program's own folder and shortcuts, after confirmation."""
+        target = item.data(Qt.UserRole)
+        if not target or not self.current_bottle:
+            return
 
-        # Connect double-click to run
-        self.shortcuts_list.itemDoubleClicked.connect(self._run_shortcut)
+        # The list is rebuilt below, which destroys ``item`` — keep the name
+        name = item.text()
+        plan = shortcuts.plan_uninstall(target, self.current_bottle.path)
+        if not plan:
+            QMessageBox.information(
+                self, "无法卸载",
+                "只能卸载安装在 Program Files、ProgramData 或 "
+                "AppData\\Local\\Programs 等独立目录中的应用。\n\n"
+                "系统自带程序（notepad、winecfg 等）请通过容器或组件管理。")
+            return
+
+        size = float(plan["size"])
+        for unit in ("B", "KB", "MB", "GB"):
+            if size < 1024 or unit == "GB":
+                size_text = f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+                break
+            size /= 1024
+
+        reply = QMessageBox.warning(
+            self, "确认卸载",
+            f"将删除应用「{name}」的整个目录：\n"
+            f"{plan['root']}\n\n"
+            f"占用空间：{size_text}\n"
+            f"同时删除 {len(plan['shortcuts'])} 个容器内快捷方式。\n\n"
+            "注册表中的残留设置不会被清理，此操作不可撤销。",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+
+        ok, error = shortcuts.remove_app(plan)
+        self.current_bottle.forget_shortcut(target)
+        self._load_shortcuts()
+        if ok:
+            QMessageBox.information(self, "卸载完成", f"已删除「{name}」。")
+        else:
+            QMessageBox.warning(self, "卸载未完成", error)
+
+    def _rename_shortcut(self, item):
+        """Rename the shortcut label (the program file is left untouched)."""
+        target = item.data(Qt.UserRole)
+        if not target or not self.current_bottle:
+            return
+        from PyQt5.QtWidgets import QInputDialog
+        new_name, ok = QInputDialog.getText(
+            self, "重命名快捷方式", "名称:", QLineEdit.Normal, item.text())
+        new_name = new_name.strip()
+        if ok and new_name and new_name != item.text():
+            if self.current_bottle.rename_shortcut(target, new_name):
+                item.setText(new_name)
+
+    def _shortcut_to_desktop(self, item):
+        """Write a .desktop launcher for this program on the Linux desktop."""
+        target = item.data(Qt.UserRole)
+        if not target or not self.current_bottle:
+            return
+        entry = next((e for e in self.current_bottle.shortcuts
+                      if e.get("target") == target), {})
+        icon = entry.get("icon") or ""
+        if not icon or not Path(icon).exists():
+            icon = shortcuts.extract_icon(target, self.config.cache_dir / "icons")
+        ok, result = shortcuts.create_desktop_entry(
+            self.current_bottle, item.text(), target, icon, self._launch_command())
+        if ok:
+            QMessageBox.information(self, "已添加到桌面", f"桌面快捷方式已创建：\n{result}")
+        else:
+            QMessageBox.warning(self, "添加失败", result)
+
+    def _launch_command(self) -> str:
+        """Command a desktop entry should use to start this program."""
+        import shutil
+        import sys
+        found = shutil.which("winbridge")
+        if found:
+            return f'"{found}"'
+        script = Path(sys.argv[0]).resolve()
+        if script.suffix == ".py":
+            return f'"{sys.executable}" "{script}"'
+        return f'"{script}"'
 
     def _run_shortcut(self, item):
         """Run a shortcut from the shortcuts list."""
-        path = item.data(Qt.UserRole)
-        if path and self.current_bottle:
-            self.current_bottle.run(path)
+        target = item.data(Qt.UserRole)
+        if not target or not self.current_bottle:
+            return
+        if not Path(target).exists():
+            QMessageBox.warning(self, "无法运行", f"程序文件不存在：\n{target}")
+            return
+        self.current_bottle.run(target)
 
     def save_description(self):
         """Save the bottle description."""
@@ -1576,7 +1220,6 @@ class BottleDetailWidget(QWidget):
             QUrl.fromLocalFile("/media/zuimeideshijie"),
             QUrl.fromLocalFile("/mnt"),
         ])
-        dialog.setStyleSheet(FILE_DIALOG_STYLE)
         if dialog.exec_() == QDialog.Accepted:
             paths = dialog.selectedFiles()
             if paths:
@@ -1692,16 +1335,16 @@ class BottleDetailWidget(QWidget):
             self.current_bottle.windows_version = version
             self.bottle_updated.emit(self.current_bottle.name)
             self._update_info_card(self.card_winver, "Windows 版本",
-                                   version, "#2ecc71")
+                                   version)
 
     def apply_environment(self):
         """Apply the selected environment."""
         if self.current_bottle:
-            env = self.env_combo.currentText()
+            env = self.env_combo.currentData()
             self.current_bottle.environment = env
             self.bottle_updated.emit(self.current_bottle.name)
             self._update_info_card(self.card_env, "环境",
-                                   env.capitalize(), "#e74c3c")
+                                   environment_label(env))
 
     def add_dll_override(self):
         """Add a DLL override."""
@@ -1761,8 +1404,9 @@ class BottleDetailWidget(QWidget):
             status = "已安装" if comp["name"] in installed else "可安装"
             status_item = QTableWidgetItem(status)
             status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
-            if comp["name"] in installed:
-                status_item.setForeground(Qt.darkGreen)
+            # Colour comes from the palette so it stays legible in dark mode
+            colour = self.theme.get("success" if comp["name"] in installed else "text_muted")
+            status_item.setForeground(QColor(colour))
             self.comp_table.setItem(row, 2, status_item)
 
     def install_component(self):
@@ -1802,11 +1446,7 @@ class BottleDetailWidget(QWidget):
 
             bottle_path = str(self.current_bottle.path)
             self.comp_status_label = QLabel("准备安装...")
-            self.comp_status_label.setStyleSheet(f"""
-                font-size: 11px;
-                color: #666666;
-                font-family: {FONT_FAMILY};
-            """)
+            self.comp_status_label.setObjectName("muted")
             parent_widget = self.comp_progress.parentWidget()
             if parent_widget:
                 parent_layout = parent_widget.layout()

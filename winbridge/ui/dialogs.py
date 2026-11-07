@@ -16,9 +16,8 @@ from PyQt5.QtWidgets import (
 )
 from ..core.config import Config
 from ..core.wine import Wine
+from ..core.bottle import ENVIRONMENT_LABELS
 from ..core.download import ComponentManager
-
-FONT_FAMILY = "'Segoe UI', 'Noto Sans CJK SC', 'Microsoft YaHei', 'WenQuanYi Micro Hei', sans-serif"
 
 
 class CreateBottleDialog(QDialog):
@@ -29,103 +28,48 @@ class CreateBottleDialog(QDialog):
         self.config = config or Config()
         self.wine = Wine(self.config.wine_path)
         self.setWindowTitle("新建容器")
-        self.setMinimumSize(500, 500)
+        self.setMinimumWidth(520)
         self.setModal(True)
         self.setup_ui()
+        self.adjustSize()
 
     def setup_ui(self):
         """Setup the dialog UI."""
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
-        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(10)
+        layout.setContentsMargins(26, 22, 26, 22)
 
         # Title
         title = QLabel("创建新容器")
-        title.setStyleSheet(f"""
-            font-size: 20px;
-            font-weight: 600;
-            color: #1a1a2e;
-            font-family: {FONT_FAMILY};
-            padding-bottom: 4px;
-        """)
+        title.setObjectName("pageTitle")
         layout.addWidget(title)
 
         subtitle = QLabel("创建一个新的 Wine 前缀来运行 Windows 应用程序")
-        subtitle.setStyleSheet(f"""
-            font-size: 12px;
-            color: #666666;
-            font-family: {FONT_FAMILY};
-            margin-bottom: 8px;
-        """)
+        subtitle.setObjectName("hint")
         layout.addWidget(subtitle)
 
         # Name
         name_label = QLabel("容器名称")
-        name_label.setStyleSheet(f"""
-            font-size: 12px;
-            font-weight: 600;
-            color: #333333;
-            font-family: {FONT_FAMILY};
-            margin-top: 4px;
-        """)
+        name_label.setObjectName("fieldLabel")
         layout.addWidget(name_label)
 
         self.bottle_name = QLineEdit()
         self.bottle_name.setPlaceholderText("例如: myapp, game1, office...")
-        self.bottle_name.setStyleSheet(f"""
-            QLineEdit {{
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 6px 10px;
-                font-size: 13px;
-                font-family: {FONT_FAMILY};
-                background: #ffffff;
-            }}
-            QLineEdit:focus {{
-                border-color: #4a90d9;
-                background: #ffffff;
-            }}
-        """)
         layout.addWidget(self.bottle_name)
 
         # Architecture
         arch_label = QLabel("架构")
-        arch_label.setStyleSheet(f"""
-            font-size: 12px;
-            font-weight: 600;
-            color: #333333;
-            font-family: {FONT_FAMILY};
-            margin-top: 8px;
-        """)
+        arch_label.setObjectName("fieldLabel")
         layout.addWidget(arch_label)
 
         arch_layout = QHBoxLayout()
-        arch_layout.setSpacing(16)
+        arch_layout.setSpacing(10)
 
         self.arch_64 = QRadioButton("64 位 (Win64)")
         self.arch_64.setChecked(True)
-        self.arch_64.setStyleSheet(f"""
-            QRadioButton {{
-                font-family: {FONT_FAMILY};
-                font-size: 13px;
-                color: #333333;
-                spacing: 6px;
-            }}
-            QRadioButton::indicator {{
-                width: 16px;
-                height: 16px;
-                border-radius: 8px;
-                border: 2px solid #999999;
-            }}
-            QRadioButton::indicator:checked {{
-                background: #4a90d9;
-                border-color: #4a90d9;
-            }}
-        """)
         arch_layout.addWidget(self.arch_64)
 
         self.arch_32 = QRadioButton("32 位 (Win32)")
-        self.arch_32.setStyleSheet(self.arch_64.styleSheet())
         arch_layout.addWidget(self.arch_32)
 
         arch_layout.addStretch()
@@ -133,54 +77,18 @@ class CreateBottleDialog(QDialog):
 
         # Environment
         env_label = QLabel("环境类型")
-        env_label.setStyleSheet(f"""
-            font-size: 12px;
-            font-weight: 600;
-            color: #333333;
-            font-family: {FONT_FAMILY};
-            margin-top: 8px;
-        """)
+        env_label.setObjectName("fieldLabel")
         layout.addWidget(env_label)
 
         self.environment_combo = QComboBox()
-        self.environment_combo.addItems([
-            "游戏/多媒体 (gaming)",
-            "办公软件 (office)",
-            "自定义 (custom)",
-        ])
-        self.environment_combo.setStyleSheet(f"""
-            QComboBox {{
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 6px 10px;
-                font-size: 13px;
-                font-family: {FONT_FAMILY};
-                background: #ffffff;
-            }}
-            QComboBox:focus {{ border-color: #4a90d9; }}
-            QComboBox::drop-down {{
-                border: none;
-                width: 24px;
-            }}
-            QComboBox QAbstractItemView {{
-                font-family: {FONT_FAMILY};
-                background: #ffffff;
-                border: 1px solid #cccccc;
-                selection-background-color: #4a90d9;
-                selection-color: #ffffff;
-            }}
-        """)
+        # Item data holds the environment key; the text is only for display
+        for key, label in ENVIRONMENT_LABELS.items():
+            self.environment_combo.addItem(label, key)
         layout.addWidget(self.environment_combo)
 
         # Windows Version
         winver_label = QLabel("Windows 版本")
-        winver_label.setStyleSheet(f"""
-            font-size: 12px;
-            font-weight: 600;
-            color: #333333;
-            font-family: {FONT_FAMILY};
-            margin-top: 8px;
-        """)
+        winver_label.setObjectName("fieldLabel")
         layout.addWidget(winver_label)
 
         self.windows_version_combo = QComboBox()
@@ -189,110 +97,49 @@ class CreateBottleDialog(QDialog):
             "win2003", "winxp", "win2k", "winme", "win98", "win95"
         ])
         self.windows_version_combo.setCurrentText("win10")
-        self.windows_version_combo.setStyleSheet(self.environment_combo.styleSheet())
         layout.addWidget(self.windows_version_combo)
 
         # Wine Version
         wine_label = QLabel("Wine 版本")
-        wine_label.setStyleSheet(f"""
-            font-size: 12px;
-            font-weight: 600;
-            color: #333333;
-            font-family: {FONT_FAMILY};
-            margin-top: 8px;
-        """)
+        wine_label.setObjectName("fieldLabel")
         layout.addWidget(wine_label)
 
         wine_ver_layout = QHBoxLayout()
-        wine_ver_layout.setSpacing(8)
+        wine_ver_layout.setSpacing(10)
 
         self.wine_source_combo = QComboBox()
         self.wine_source_combo.addItems([
             "系统默认 Wine",
             "自定义路径...",
         ])
-        self.wine_source_combo.setStyleSheet(self.environment_combo.styleSheet())
         self.wine_source_combo.currentIndexChanged.connect(self.on_wine_source_changed)
         wine_ver_layout.addWidget(self.wine_source_combo, 1)
 
         self.wine_path_input = QLineEdit()
         self.wine_path_input.setPlaceholderText("选择 Wine 二进制文件...")
         self.wine_path_input.setVisible(False)
-        self.wine_path_input.setStyleSheet(f"""
-            QLineEdit {{
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 6px 10px;
-                font-size: 13px;
-                font-family: {FONT_FAMILY};
-                background: #ffffff;
-            }}
-            QLineEdit:focus {{
-                border-color: #4a90d9;
-            }}
-        """)
         wine_ver_layout.addWidget(self.wine_path_input, 2)
 
         self.btn_browse_wine = QPushButton("浏览...")
         self.btn_browse_wine.setVisible(False)
-        self.btn_browse_wine.setStyleSheet(f"""
-            QPushButton {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 5px 12px;
-                font-size: 12px;
-                background: #f0f0f0;
-                color: #333333;
-            }}
-            QPushButton:hover {{
-                background: #e5e5e5;
-            }}
-            QPushButton:pressed {{
-                background: #d9d9d9;
-            }}
-        """)
+        self.btn_browse_wine.setObjectName("btnDefault")
         self.btn_browse_wine.clicked.connect(self.browse_wine_path)
         wine_ver_layout.addWidget(self.btn_browse_wine)
 
         layout.addLayout(wine_ver_layout)
 
         self.wine_ver_hint = QLabel(f"当前: {self.wine.version}")
-        self.wine_ver_hint.setStyleSheet(f"""
-            font-size: 11px;
-            color: #999999;
-            font-family: {FONT_FAMILY};
-        """)
+        self.wine_ver_hint.setObjectName("hint")
         layout.addWidget(self.wine_ver_hint)
 
         # Description
         desc_label = QLabel("描述 (可选)")
-        desc_label.setStyleSheet(f"""
-            font-size: 12px;
-            font-weight: 600;
-            color: #333333;
-            font-family: {FONT_FAMILY};
-            margin-top: 8px;
-        """)
+        desc_label.setObjectName("fieldLabel")
         layout.addWidget(desc_label)
 
         self.description = QTextEdit()
         self.description.setPlaceholderText("添加容器描述...")
         self.description.setMaximumHeight(70)
-        self.description.setStyleSheet(f"""
-            QTextEdit {{
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 6px 10px;
-                font-size: 13px;
-                font-family: {FONT_FAMILY};
-                background: #ffffff;
-            }}
-            QTextEdit:focus {{
-                border-color: #4a90d9;
-                background: #ffffff;
-            }}
-        """)
         layout.addWidget(self.description)
 
         # Spacer
@@ -300,59 +147,17 @@ class CreateBottleDialog(QDialog):
 
         # Buttons
         btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(8)
+        btn_layout.setSpacing(10)
 
         btn_cancel = QPushButton("取消")
-        btn_cancel.setStyleSheet(f"""
-            QPushButton {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 6px 20px;
-                font-size: 13px;
-                background: #f0f0f0;
-                color: #333333;
-                min-width: 80px;
-            }}
-            QPushButton:hover {{
-                background: #e5e5e5;
-            }}
-            QPushButton:pressed {{
-                background: #d9d9d9;
-            }}
-        """)
+        btn_cancel.setObjectName("btnDefault")
         btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(btn_cancel)
 
         btn_layout.addStretch()
 
         self.btn_create = QPushButton("创建容器")
-        self.btn_create.setStyleSheet(f"""
-            QPushButton {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #4a90d9;
-                border-radius: 3px;
-                padding: 6px 24px;
-                font-size: 13px;
-                font-weight: 600;
-                background: #4a90d9;
-                color: #ffffff;
-                min-width: 100px;
-            }}
-            QPushButton:hover {{
-                background: #357abd;
-                border-color: #357abd;
-            }}
-            QPushButton:pressed {{
-                background: #2a6cb5;
-                border-color: #2a6cb5;
-            }}
-            QPushButton:disabled {{
-                background: #d0d0d0;
-                border-color: #d0d0d0;
-                color: #888888;
-            }}
-        """)
+        self.btn_create.setObjectName("btnPrimary")
         self.btn_create.clicked.connect(self.accept)
         self.btn_create.setEnabled(False)
         btn_layout.addWidget(self.btn_create)
@@ -400,18 +205,19 @@ class FirstRunDialog(QDialog):
         self.config = config or Config()
         self.component_manager = ComponentManager(self.config)
         self.setWindowTitle("欢迎使用 WinBridge")
-        self.setMinimumSize(480, 400)
+        self.setMinimumWidth(480)
+        self.adjustSize()
         self.setModal(True)
         self.setup_ui()
 
     def setup_ui(self):
         """Setup the dialog UI."""
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
-        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(10)
+        layout.setContentsMargins(26, 22, 26, 22)
 
         # Icon + Title
-        logo_pix = QPixmap(str(Path(__file__).parent / "resources" / "logo.png"))
+        logo_pix = QPixmap(str(Path(__file__).parent.parent / "resources" / "logo.png"))
         logo_pix = logo_pix.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         icon = QLabel()
         icon.setPixmap(logo_pix)
@@ -421,12 +227,7 @@ class FirstRunDialog(QDialog):
 
         title = QLabel("首次使用 WinBridge")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet(f"""
-            font-size: 20px;
-            font-weight: 600;
-            color: #1a1a2e;
-            font-family: {FONT_FAMILY};
-        """)
+        title.setObjectName("pageTitle")
         layout.addWidget(title)
 
         desc = QLabel(
@@ -434,12 +235,7 @@ class FirstRunDialog(QDialog):
             "首次启动建议下载基础文件以获得最佳体验。"
         )
         desc.setAlignment(Qt.AlignCenter)
-        desc.setStyleSheet(f"""
-            font-size: 12px;
-            color: #666666;
-            font-family: {FONT_FAMILY};
-            line-height: 1.5;
-        """)
+        desc.setObjectName("hint")
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
@@ -447,58 +243,24 @@ class FirstRunDialog(QDialog):
 
         # Options group
         options_frame = QFrame()
-        options_frame.setStyleSheet(f"""
-            QFrame {{
-                border: 1px solid #e0e0e0;
-                border-radius: 4px;
-                background: #fafafa;
-                padding: 12px;
-            }}
-        """)
+        options_frame.setObjectName("panel")
         options_layout = QVBoxLayout(options_frame)
         options_layout.setSpacing(10)
         options_layout.setContentsMargins(12, 12, 12, 12)
 
         options_title = QLabel("首次设置")
-        options_title.setStyleSheet(f"""
-            font-size: 12px;
-            font-weight: 600;
-            color: #333333;
-            font-family: {FONT_FAMILY};
-        """)
+        options_title.setObjectName("sectionTitle")
         options_layout.addWidget(options_title)
 
         self.download_base = QCheckBox("下载基础组件 (Wine-GE, DXVK, vcrun 等)")
         self.download_base.setChecked(True)
-        self.download_base.setStyleSheet(f"""
-            QCheckBox {{
-                font-family: {FONT_FAMILY};
-                font-size: 13px;
-                color: #333333;
-                spacing: 6px;
-            }}
-            QCheckBox::indicator {{
-                width: 16px;
-                height: 16px;
-                border-radius: 2px;
-                border: 2px solid #999999;
-            }}
-            QCheckBox::indicator:checked {{
-                background: #4a90d9;
-                border-color: #4a90d9;
-            }}
-        """)
         options_layout.addWidget(self.download_base)
 
         hint = QLabel(
             "基础文件将从 GitCode 下载。\n"
             "如果网络不佳，可跳过此步骤稍后手动下载。"
         )
-        hint.setStyleSheet(f"""
-            font-size: 11px;
-            color: #999999;
-            font-family: {FONT_FAMILY};
-        """)
+        hint.setObjectName("hint")
         options_layout.addWidget(hint)
 
         layout.addWidget(options_frame)
@@ -507,54 +269,17 @@ class FirstRunDialog(QDialog):
 
         # Buttons
         btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(8)
+        btn_layout.setSpacing(10)
 
         self.skip_btn = QPushButton("跳过")
-        self.skip_btn.setStyleSheet(f"""
-            QPushButton {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 6px 20px;
-                font-size: 13px;
-                background: #f0f0f0;
-                color: #333333;
-                min-width: 80px;
-            }}
-            QPushButton:hover {{
-                background: #e5e5e5;
-            }}
-            QPushButton:pressed {{
-                background: #d9d9d9;
-            }}
-        """)
+        self.skip_btn.setObjectName("btnDefault")
         self.skip_btn.clicked.connect(self.reject)
         btn_layout.addWidget(self.skip_btn)
 
         btn_layout.addStretch()
 
         self.continue_btn = QPushButton("继续")
-        self.continue_btn.setStyleSheet(f"""
-            QPushButton {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #4a90d9;
-                border-radius: 3px;
-                padding: 6px 24px;
-                font-size: 13px;
-                font-weight: 600;
-                background: #4a90d9;
-                color: #ffffff;
-                min-width: 100px;
-            }}
-            QPushButton:hover {{
-                background: #357abd;
-                border-color: #357abd;
-            }}
-            QPushButton:pressed {{
-                background: #2a6cb5;
-                border-color: #2a6cb5;
-            }}
-        """)
+        self.continue_btn.setObjectName("btnPrimary")
         self.continue_btn.clicked.connect(self.accept)
         btn_layout.addWidget(self.continue_btn)
 
@@ -573,44 +298,21 @@ class DLLOverrideDialog(QDialog):
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(10)
+        layout.setContentsMargins(26, 22, 26, 22)
 
         title = QLabel("添加 DLL 覆盖")
-        title.setStyleSheet(f"""
-            font-size: 16px;
-            font-weight: 600;
-            color: #1a1a2e;
-            font-family: {FONT_FAMILY};
-            padding-bottom: 4px;
-        """)
+        title.setObjectName("dialogTitle")
         layout.addWidget(title)
 
         form = QFormLayout()
         form.setSpacing(10)
-        form.setLabelAlignment(Qt.AlignRight)
+        form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         self.dll_name = QLineEdit()
         self.dll_name.setPlaceholderText("例如: d3d9, d3d11, xaudio2_7")
-        self.dll_name.setStyleSheet(f"""
-            QLineEdit {{
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 6px 10px;
-                font-size: 13px;
-                font-family: {FONT_FAMILY};
-                background: #ffffff;
-            }}
-            QLineEdit:focus {{
-                border-color: #4a90d9;
-            }}
-        """)
-        dll_label = QLabel("DLL 名称:")
-        dll_label.setStyleSheet(f"""
-            font-size: 13px;
-            color: #333333;
-            font-family: {FONT_FAMILY};
-        """)
+        dll_label = QLabel("DLL 名称")
+        dll_label.setObjectName("fieldLabel")
         form.addRow(dll_label, self.dll_name)
 
         self.mode_combo = QComboBox()
@@ -621,34 +323,8 @@ class DLLOverrideDialog(QDialog):
             "builtin (仅内置)",
             "disable (禁用)",
         ])
-        self.mode_combo.setStyleSheet(f"""
-            QComboBox {{
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 6px 10px;
-                font-size: 13px;
-                font-family: {FONT_FAMILY};
-                background: #ffffff;
-            }}
-            QComboBox:focus {{ border-color: #4a90d9; }}
-            QComboBox::drop-down {{
-                border: none;
-                width: 24px;
-            }}
-            QComboBox QAbstractItemView {{
-                font-family: {FONT_FAMILY};
-                background: #ffffff;
-                border: 1px solid #cccccc;
-                selection-background-color: #4a90d9;
-                selection-color: #ffffff;
-            }}
-        """)
-        mode_label = QLabel("加载模式:")
-        mode_label.setStyleSheet(f"""
-            font-size: 13px;
-            color: #333333;
-            font-family: {FONT_FAMILY};
-        """)
+        mode_label = QLabel("加载模式")
+        mode_label.setObjectName("fieldLabel")
         form.addRow(mode_label, self.mode_combo)
 
         layout.addLayout(form)
@@ -657,59 +333,17 @@ class DLLOverrideDialog(QDialog):
 
         # Buttons
         btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(8)
+        btn_layout.setSpacing(10)
 
         btn_cancel = QPushButton("取消")
-        btn_cancel.setStyleSheet(f"""
-            QPushButton {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 6px 20px;
-                font-size: 13px;
-                background: #f0f0f0;
-                color: #333333;
-                min-width: 80px;
-            }}
-            QPushButton:hover {{
-                background: #e5e5e5;
-            }}
-            QPushButton:pressed {{
-                background: #d9d9d9;
-            }}
-        """)
+        btn_cancel.setObjectName("btnDefault")
         btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(btn_cancel)
 
         btn_layout.addStretch()
 
         self.btn_ok = QPushButton("确定")
-        self.btn_ok.setStyleSheet(f"""
-            QPushButton {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #4a90d9;
-                border-radius: 3px;
-                padding: 6px 24px;
-                font-size: 13px;
-                font-weight: 600;
-                background: #4a90d9;
-                color: #ffffff;
-                min-width: 80px;
-            }}
-            QPushButton:hover {{
-                background: #357abd;
-                border-color: #357abd;
-            }}
-            QPushButton:pressed {{
-                background: #2a6cb5;
-                border-color: #2a6cb5;
-            }}
-            QPushButton:disabled {{
-                background: #d0d0d0;
-                border-color: #d0d0d0;
-                color: #888888;
-            }}
-        """)
+        self.btn_ok.setObjectName("btnPrimary")
         self.btn_ok.clicked.connect(self.accept)
         self.btn_ok.setEnabled(False)
         btn_layout.addWidget(self.btn_ok)
@@ -748,18 +382,12 @@ class TaskManagerDialog(QDialog):
     def setup_ui(self):
         """Setup the task manager UI."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(26, 22, 26, 22)
+        layout.setSpacing(10)
 
         # Title
         title = QLabel("任务管理器")
-        title.setStyleSheet(f"""
-            font-size: 16px;
-            font-weight: 600;
-            color: #1a1a2e;
-            font-family: {FONT_FAMILY};
-            padding-bottom: 4px;
-        """)
+        title.setObjectName("dialogTitle")
         layout.addWidget(title)
 
         # Process table
@@ -770,128 +398,37 @@ class TaskManagerDialog(QDialog):
         ])
         self.process_table.horizontalHeader().setStretchLastSection(True)
         self.process_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.process_table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.process_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.process_table.setSelectionMode(QTableWidget.SingleSelection)
         self.process_table.setAlternatingRowColors(True)
         self.process_table.verticalHeader().setVisible(False)
-        self.process_table.setStyleSheet(f"""
-            QTableWidget {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                font-size: 12px;
-                background: #ffffff;
-                alternate-background-color: #f5f5f5;
-                gridline-color: #e0e0e0;
-            }}
-            QTableWidget::item {{
-                padding: 4px 8px;
-                color: #333333;
-                background: #ffffff;
-            }}
-            QTableWidget::item:selected {{
-                background: #e8f0fe;
-                color: #1a1a2e;
-            }}
-            QTableWidget::item:alternate {{
-                background: #f5f5f5;
-                color: #333333;
-            }}
-            QHeaderView::section {{
-                font-family: {FONT_FAMILY};
-                background: #f0f0f0;
-                border: none;
-                border-bottom: 1px solid #cccccc;
-                padding: 6px 8px;
-                font-weight: 600;
-                font-size: 12px;
-                color: #444444;
-            }}
-        """)
+        self.process_table.setShowGrid(False)
         layout.addWidget(self.process_table, 1)
 
         # Bottom bar
         bottom = QHBoxLayout()
-        bottom.setSpacing(8)
+        bottom.setSpacing(10)
 
         self.status_label = QLabel("就绪")
-        self.status_label.setStyleSheet(f"""
-            font-size: 12px;
-            color: #666666;
-            font-family: {FONT_FAMILY};
-        """)
+        self.status_label.setObjectName("muted")
         bottom.addWidget(self.status_label)
 
         bottom.addStretch()
 
         self.btn_end = QPushButton("结束进程")
-        self.btn_end.setStyleSheet(f"""
-            QPushButton {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #e74c3c;
-                border-radius: 3px;
-                padding: 6px 16px;
-                font-size: 12px;
-                background: #ffffff;
-                color: #e74c3c;
-            }}
-            QPushButton:hover {{
-                background: #e74c3c;
-                color: #ffffff;
-            }}
-            QPushButton:pressed {{
-                background: #c0392b;
-                border-color: #c0392b;
-            }}
-            QPushButton:disabled {{
-                border-color: #cccccc;
-                color: #aaaaaa;
-                background: #f0f0f0;
-            }}
-        """)
+        self.btn_end.setObjectName("btnDanger")
         self.btn_end.clicked.connect(self.kill_selected_process)
         self.btn_end.setEnabled(False)
         bottom.addWidget(self.btn_end)
 
         self.btn_open_taskmgr = QPushButton("Wine 任务管理器")
-        self.btn_open_taskmgr.setStyleSheet(f"""
-            QPushButton {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 6px 16px;
-                font-size: 12px;
-                background: #f0f0f0;
-                color: #333333;
-            }}
-            QPushButton:hover {{
-                background: #e5e5e5;
-            }}
-            QPushButton:pressed {{
-                background: #d9d9d9;
-            }}
-        """)
+        self.btn_open_taskmgr.setObjectName("btnDefault")
         self.btn_open_taskmgr.clicked.connect(self.open_wine_taskmgr)
         bottom.addWidget(self.btn_open_taskmgr)
 
         self.btn_refresh = QPushButton("刷新")
-        self.btn_refresh.setStyleSheet(f"""
-            QPushButton {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 6px 16px;
-                font-size: 12px;
-                background: #f0f0f0;
-                color: #333333;
-            }}
-            QPushButton:hover {{
-                background: #e5e5e5;
-            }}
-            QPushButton:pressed {{
-                background: #d9d9d9;
-            }}
-        """)
+        self.btn_refresh.setObjectName("btnDefault")
         self.btn_refresh.clicked.connect(self.refresh_processes)
         bottom.addWidget(self.btn_refresh)
 

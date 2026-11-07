@@ -7,6 +7,7 @@ import shutil
 import tarfile
 import subprocess
 import tempfile
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -14,9 +15,38 @@ from typing import Callable, List, Optional
 from .config import Config
 
 
+# GitHub 直连在 CN 网络经常超时（release 资产尤其明显），所有 GitHub
+# 资源统一走镜像前缀：镜像的用法是 "<镜像前缀><完整原始 URL>"。
+# 前两个是首选镜像（实测速度最好），其余仅作兜底。
+# 微软下载源（aka.ms / download.microsoft.com / *.visualstudio.microsoft.com）
+# 本身可用，保持直连，不经过镜像。
+GITHUB_MIRRORS = (
+    "https://gh-proxy.org/",
+    "https://v6.gh-proxy.org/",
+    "https://gh-proxy.com/",
+    "https://ghproxy.net/",
+    "https://ghfast.top/",
+)
+
+_GITHUB_HOSTS = (
+    "github.com",
+    "raw.githubusercontent.com",
+    "api.github.com",
+    "codeload.github.com",
+    "objects.githubusercontent.com",
+)
+
+
+def is_github_url(url: str) -> bool:
+    """Whether a URL points at GitHub and should go through a mirror."""
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    return host in _GITHUB_HOSTS or host.endswith(".github.com")
+
+
 # Winetricks verb → display info mapping
-# Components with "gitcode" use direct GitCode mirror downloads;
-# components without it fall back to winetricks.
+# Components with a "gitcode" block download their files directly (GitHub
+# release assets go through GITHUB_MIRRORS; GitCode/GitHub source clones are
+# already mirrored); components without it fall back to winetricks.
 COMPONENT_MAP = {
     "vcrun2019": {
         "label": "Visual C++ 2019",
@@ -66,30 +96,45 @@ COMPONENT_MAP = {
         "label": "DXVK",
         "description": "DirectX 9/10/11 to Vulkan translation layer",
         "verb": "dxvk",
+        # 官方预编译包（无需 meson 编译，避免 "meson: 未找到命令"）。
+        # 链接来自 GitHub releases（v2.7.1 → dxvk-2.7.1.tar.gz）。
         "gitcode": {
-            "repo": "https://gitcode.com/gh_mirrors/dx/dxvk.git",
+            "label": "DXVK",
             "version": "2.7.1",
-            "setup_script": "setup_dxvk.sh",
+            "type": "precompiled_tarball",
+            "tarball_url": "https://github.com/doitsujin/dxvk/releases/download/v2.7.1/dxvk-2.7.1.tar.gz",
+            "tarball_file": "dxvk-2.7.1.tar.gz",
+            "dlls": ["dxgi", "d3d8", "d3d9", "d3d10core", "d3d11"],
         },
     },
     "vkd3d": {
         "label": "VKD3D",
         "description": "DirectX 12 to Vulkan translation layer",
         "verb": "vkd3d",
+        # 与 dxvk 相同：改用预编译包，避免源码编译依赖。
+        # vkd3d-proton 只发布 .tar.zst（没有 .tar.gz），需 zstd 解压。
         "gitcode": {
-            "repo": "https://gitcode.com/gh_mirrors/vk/vkd3d-proton.git",
+            "label": "VKD3D",
             "version": "2.14.1",
-            "setup_script": "setup_vkd3d_proton.sh",
+            "type": "precompiled_tarball",
+            "tarball_url": "https://github.com/HansKristian-Work/vkd3d-proton/releases/download/v2.14.1/vkd3d-proton-2.14.1.tar.zst",
+            "tarball_file": "vkd3d-proton-2.14.1.tar.zst",
+            "dlls": ["d3d12", "d3d12core"],
         },
     },
     "faudio": {
         "label": "FAudio",
         "description": "XAudio/X3DAudio reimplementation",
         "verb": "faudio",
+        # 预编译包（Kron4ek 构建），与 winetricks 的 faudio verb 同源。
+        # 上游 FAudio 源码仓库没有安装脚本，克隆源码在当前环境下无法安装。
         "gitcode": {
-            "repo": "https://gitcode.com/gh_mirrors/fa/FAudio.git",
+            "label": "FAudio",
             "version": "20.07",
-            "setup_script": "wine_setup_faudio.sh",
+            "type": "precompiled_tarball",
+            "tarball_url": "https://github.com/Kron4ek/FAudio-Builds/releases/download/20.07/faudio-20.07.tar.xz",
+            "tarball_file": "faudio-20.07.tar.xz",
+            "dlls": ["FAudio"],
         },
     },
     "gdiplus": {
@@ -201,6 +246,8 @@ class ComponentManager:
     def __init__(self, config: Config = None):
         self.config = config or Config()
         self._winetricks_path = self._find_winetricks()
+        # Mirror prefix that last worked for a GitHub download (None = direct)
+        self._github_mirror = None
 
     def _find_winetricks(self) -> str:
         """Find the winetricks binary on the system."""
@@ -268,17 +315,17 @@ class ComponentManager:
         if "redist" in info:
             return self._install_redist_exe(component_name, info, bottle_path, progress_callback)
 
-        # Use custom GitCode installer if configured
+        # Custom download (GitHub release assets via mirrors, or a GitCode repo)
         if "gitcode" in info:
             gc = info["gitcode"]
             install_type = gc.get("type", "")
             # DirectX redist → extract DLLs directly
             if install_type == "directx_redist":
                 return self._install_directx_redist(component_name, info, bottle_path, progress_callback)
-            # tarball + setup script → _install_from_gitcode (DXVK/VKD3D)
-            if "setup_script" in gc:
-                return self._install_from_gitcode(component_name, info, bottle_path, progress_callback)
-            # .exe or .zip installer → _install_gitcode_exe (vcrun, dotnet48)
+            # Precompiled tarball (DXVK/VKD3D/FAudio) — download, extract, copy DLLs
+            if install_type == "precompiled_tarball":
+                return self._install_precompiled_tarball(component_name, info, bottle_path, progress_callback)
+            # .exe or .zip installer → _install_gitcode_exe
             return self._install_gitcode_exe(component_name, info, bottle_path, progress_callback)
 
         # Fallback to winetricks for other components
@@ -289,7 +336,7 @@ class ComponentManager:
                    label: str = "") -> tuple:
         """Clone a git repo (shallow) to dest. Returns (success, error)."""
         if progress_callback:
-            progress_callback(0, 100, f"📥 正在克隆 {label}...")
+            progress_callback(0, 100, f"正在克隆 {label}...")
         try:
             result = subprocess.run(
                 ["git", "clone", "--depth", "1", repo, dest],
@@ -298,7 +345,7 @@ class ComponentManager:
             if result.returncode != 0:
                 return False, f"git clone 失败: {result.stderr.strip()[:200]}"
             if progress_callback:
-                progress_callback(50, 100, f"✅ {label} 克隆完成")
+                progress_callback(50, 100, f"{label} 克隆完成")
             return True, ""
         except subprocess.TimeoutExpired:
             return False, "git clone 超时（300秒）"
@@ -346,7 +393,7 @@ class ComponentManager:
                 return clone_path, ""
             # Incomplete clone — remove and re-clone
             if progress_callback:
-                progress_callback(0, 100, f"⚠ 缓存不完整，重新下载 {label}...")
+                progress_callback(0, 100, f"缓存不完整，重新下载 {label}...")
             import shutil
             shutil.rmtree(clone_path, ignore_errors=True)
 
@@ -356,17 +403,57 @@ class ComponentManager:
             return None, err
         return clone_path, ""
 
+    def _download_candidates(self, url: str) -> List[tuple]:
+        """Ordered (mirror_prefix, url) pairs to try for a download.
+
+        GitHub URLs go through the mirror that worked last time first, then
+        the remaining mirrors, and the original GitHub URL as a last resort.
+        Anything else (e.g. Microsoft download hosts) is returned untouched
+        with a prefix of None.
+        """
+        if not is_github_url(url):
+            return [(None, url)]
+        mirrors = list(GITHUB_MIRRORS)
+        if self._github_mirror in mirrors:
+            mirrors.remove(self._github_mirror)
+            mirrors.insert(0, self._github_mirror)
+        return [(m, f"{m}{url}") for m in mirrors] + [(None, url)]
+
     def _download_file(self, url: str, dest_path: str,
                        progress_callback: Callable = None,
                        label: str = "") -> tuple:
-        """Download a file with real-time progress and speed reporting.
+        """Download a file, routing GitHub URLs through mirrors.
 
-        Reports percentage, downloaded/total MB, current speed (KB/s),
-        and ETA on every ~50KB chunk. Returns (success: bool, error: str).
+        Each candidate source is tried in turn; the mirror that succeeds is
+        remembered so subsequent downloads skip the ones that don't work.
+        Returns (success: bool, error: str).
+        """
+        candidates = self._download_candidates(url)
+        last_err = ""
+        for prefix, candidate in candidates:
+            if progress_callback:
+                host = urllib.parse.urlsplit(prefix).hostname if prefix else ""
+                suffix = f"（镜像 {host}）" if host else ""
+                progress_callback(0, 100, f"正在下载 {label}{suffix}...")
+            ok, err = self._download_one(candidate, dest_path, progress_callback,
+                                         label, mirrored=bool(prefix))
+            if ok:
+                self._github_mirror = prefix
+                return True, ""
+            last_err = err
+        if len(candidates) > 1:
+            return False, f"下载失败（已尝试 {len(candidates)} 个源）: {last_err}"
+        return False, f"下载失败: {last_err}"
+
+    def _download_one(self, url: str, dest_path: str,
+                      progress_callback: Callable = None,
+                      label: str = "", mirrored: bool = False) -> tuple:
+        """Download a single URL with real-time progress and speed reporting.
+
+        Reports percentage, downloaded/total MB, current speed (KB/s), and
+        ETA on every ~50KB chunk. Returns (success: bool, error: str).
         """
         import time
-        if progress_callback:
-            progress_callback(0, 100, f"📥 正在下载 {label}...")
 
         # Microsoft download hosts whose TLS cert chain is sometimes
         # incomplete when served via CN CDN nodes (e.g. ksyuncdn), which
@@ -379,85 +466,95 @@ class ComponentManager:
             "aka.ms",
         )
 
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "WinBridge/0.1"})
-            host = url.split("/")[2].lower() if "://" in url else ""
-            # Microsoft official hosts are hardcoded, and their CN CDN nodes
-            # (e.g. ksyuncdn) often serve an incomplete TLS chain. Connect
-            # without verification directly — failing first and retrying can
-            # stall the UI for 60s+ per attempt (three sequential urlopen
-            # calls could freeze the download bar for minutes).
-            if host in _MS_DOWNLOAD_HOSTS:
-                import ssl
-                ctx = ssl._create_unverified_context()
-                resp = urllib.request.urlopen(req, timeout=60, context=ctx)
-            else:
-                resp = urllib.request.urlopen(req, timeout=60)
-            with resp:
-                total = int(resp.headers.get("Content-Length", 0))
-                total_mb = total / (1024 * 1024) if total else 0
+        # Mirrors are either healthy or plainly dead, so don't spend as long
+        # on them as on the (usually slower but reliable) official hosts.
+        attempts = 2 if mirrored else 3
+        timeout = 60 if mirrored else 120
 
-                # Use a partial file to support resume on interruption
-                part_path = dest_path + ".part"
-                downloaded = 0
-                start_time = time.time()
-                last_cb_time = start_time
-                last_cb_bytes = 0
-                chunk = 65536  # 64KB chunks for finer speed updates
-
-                with open(part_path, "wb") as f:
-                    while True:
-                        buf = resp.read(chunk)
-                        if not buf:
-                            break
-                        f.write(buf)
-                        downloaded += len(buf)
-
-                        if progress_callback:
-                            now = time.time()
-                            elapsed = now - start_time
-                            # Throttle callbacks to ~5 per second max
-                            if now - last_cb_time >= 0.2 or not total:
-                                pct = min(int(downloaded * 100 / total), 99) if total else 50
-                                dl_mb = downloaded / (1024 * 1024)
-                                # Instant speed over the last interval
-                                interval = now - last_cb_time
-                                if interval > 0:
-                                    speed = (downloaded - last_cb_bytes) / interval
-                                else:
-                                    speed = 0
-                                speed_kb = speed / 1024
-                                if total and speed > 0:
-                                    eta_s = (total - downloaded) / speed
-                                    eta_m = int(eta_s // 60)
-                                    eta_s = int(eta_s % 60)
-                                    msg = (f"📥 正在下载 {label}  "
-                                           f"{dl_mb:.1f}/{total_mb:.1f}MB  "
-                                           f"{speed_kb:.1f}KB/s  "
-                                           f"剩余 {eta_m}m{eta_s}s")
-                                else:
-                                    msg = (f"📥 正在下载 {label}  "
-                                           f"{dl_mb:.1f}/{total_mb:.1f}MB  "
-                                           f"{speed_kb:.1f}KB/s")
-                                progress_callback(pct, 100, msg)
-                                last_cb_time = now
-                                last_cb_bytes = downloaded
-
-                # Finalize: rename .part to dest
-                os.replace(part_path, dest_path)
-
-            if progress_callback:
-                progress_callback(100, 100, f"✅ {label} 下载完成")
-            return True, ""
-        except Exception as e:
-            # Clean up partial file on failure
+        last_err = None
+        for attempt in range(attempts):
             part_path = dest_path + ".part"
-            if os.path.exists(part_path):
-                try:
-                    os.remove(part_path)
-                except OSError:
-                    pass
-            return False, f"下载失败: {e}"
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "WinBridge/0.1"})
+                host = (urllib.parse.urlsplit(url).hostname or "").lower()
+                # Microsoft official hosts are hardcoded, and their CN CDN nodes
+                # (e.g. ksyuncdn) often serve an incomplete TLS chain. Connect
+                # without verification directly — failing first and retrying can
+                # stall the UI for 60s+ per attempt (three sequential urlopen
+                # calls could freeze the download bar for minutes).
+                if host in _MS_DOWNLOAD_HOSTS:
+                    import ssl
+                    ctx = ssl._create_unverified_context()
+                    resp = urllib.request.urlopen(req, timeout=timeout, context=ctx)
+                else:
+                    resp = urllib.request.urlopen(req, timeout=timeout)
+                with resp:
+                    total = int(resp.headers.get("Content-Length", 0))
+                    total_mb = total / (1024 * 1024) if total else 0
+
+                    # Use a partial file to support resume on interruption
+                    downloaded = 0
+                    start_time = time.time()
+                    last_cb_time = start_time
+                    last_cb_bytes = 0
+                    chunk = 65536  # 64KB chunks for finer speed updates
+
+                    with open(part_path, "wb") as f:
+                        while True:
+                            buf = resp.read(chunk)
+                            if not buf:
+                                break
+                            f.write(buf)
+                            downloaded += len(buf)
+
+                            if progress_callback:
+                                now = time.time()
+                                # Throttle callbacks to ~5 per second max
+                                if now - last_cb_time >= 0.2 or not total:
+                                    pct = min(int(downloaded * 100 / total), 99) if total else 50
+                                    dl_mb = downloaded / (1024 * 1024)
+                                    # Instant speed over the last interval
+                                    interval = now - last_cb_time
+                                    if interval > 0:
+                                        speed = (downloaded - last_cb_bytes) / interval
+                                    else:
+                                        speed = 0
+                                    speed_kb = speed / 1024
+                                    if total and speed > 0:
+                                        eta_s = (total - downloaded) / speed
+                                        eta_m = int(eta_s // 60)
+                                        eta_s = int(eta_s % 60)
+                                        msg = (f"正在下载 {label}  "
+                                               f"{dl_mb:.1f}/{total_mb:.1f}MB  "
+                                               f"{speed_kb:.1f}KB/s  "
+                                               f"剩余 {eta_m}m{eta_s}s")
+                                    else:
+                                        msg = (f"正在下载 {label}  "
+                                               f"{dl_mb:.1f}/{total_mb:.1f}MB  "
+                                               f"{speed_kb:.1f}KB/s")
+                                    progress_callback(pct, 100, msg)
+                                    last_cb_time = now
+                                    last_cb_bytes = downloaded
+
+                    # Finalize: rename .part to dest
+                    os.replace(part_path, dest_path)
+
+                if progress_callback:
+                    progress_callback(100, 100, f"{label} 下载完成")
+                return True, ""
+            except Exception as e:
+                last_err = e
+                # Clean up partial file before retry
+                if os.path.exists(part_path):
+                    try:
+                        os.remove(part_path)
+                    except OSError:
+                        pass
+                if attempt < attempts - 1:
+                    import time as _time
+                    _time.sleep(2)
+                    continue
+        return False, str(last_err)
 
     @staticmethod
     def _verify_file(filepath: str) -> tuple:
@@ -500,6 +597,25 @@ class ComponentManager:
                 return True, ""
             except (tarfile.TarError, EOFError, OSError) as e:
                 return False, f"tar.xz 损坏: {e}"
+
+        # .tar.zst / .tzst — tarfile has no zstd support, so verify with the CLI
+        if name.endswith(".tar.zst") or name.endswith(".tzst"):
+            try:
+                result = subprocess.run(["zstd", "-t", filepath],
+                                        capture_output=True, text=True, timeout=300)
+            except FileNotFoundError:
+                # No zstd CLI: fall back to checking the frame magic number
+                with open(filepath, "rb") as f:
+                    magic = f.read(4)
+                if magic != b"\x28\xb5\x2f\xfd":
+                    return False, f"非有效的 zstd 压缩包 (头部: {magic.hex()})"
+                return True, ""
+            except subprocess.TimeoutExpired:
+                return False, "zstd 校验超时"
+            if result.returncode != 0:
+                msg = (result.stderr.strip() or result.stdout.strip())[:200]
+                return False, f"tar.zst 损坏: {msg}"
+            return True, ""
 
         # .zip
         if ext == ".zip":
@@ -546,7 +662,7 @@ class ComponentManager:
 
             # File corrupt — remove and retry
             if progress_callback:
-                progress_callback(0, 100, f"⚠ 文件损坏，正在重新下载 {label}...")
+                progress_callback(0, 100, f"文件损坏，正在重新下载 {label}...")
             try:
                 os.remove(dest_path)
             except OSError:
@@ -602,7 +718,7 @@ class ComponentManager:
             file_name = Path(url).name
             local_path = str(cache_dir / file_name)
             if progress_callback:
-                progress_callback(0, 100, f"📥 正在下载 {label} ({arch})...")
+                progress_callback(0, 100, f"正在下载 {label} ({arch})...")
             ok, err = self._download_and_verify(
                 url, local_path, progress_callback, f"{label} {arch}")
             if not ok:
@@ -624,7 +740,7 @@ class ComponentManager:
         for local_path in local_files:
             pkg_name = Path(local_path).name
             if progress_callback:
-                progress_callback(0, 100, f"⚙ 正在安装 {label} ({pkg_name}) 到容器...")
+                progress_callback(0, 100, f"正在安装 {label} ({pkg_name}) 到容器...")
             env = os.environ.copy()
             env["WINEPREFIX"] = bottle_path
             env["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d"
@@ -640,7 +756,7 @@ class ComponentManager:
                 return False, f"{pkg_name} 安装失败: {err_out}"
 
         if progress_callback:
-            progress_callback(100, 100, f"✅ {label} 安装完成")
+            progress_callback(100, 100, f"{label} 安装完成")
         return True, ""
 
     def _install_redist_extract(self, label: str, local_files: list,
@@ -654,7 +770,7 @@ class ComponentManager:
         them into the bottle's system dirs — same approach winetricks uses.
         """
         if progress_callback:
-            progress_callback(0, 100, f"⚙ 正在提取 {label}...")
+            progress_callback(0, 100, f"正在提取 {label}...")
 
         extract_dir = tempfile.mkdtemp(prefix=f"winbridge_{label}_")
         try:
@@ -717,7 +833,7 @@ class ComponentManager:
                 return False, f"未找到可复制的 DLL 文件"
 
             if progress_callback:
-                progress_callback(100, 100, f"✅ {label} 安装完成（{copied} 个文件）")
+                progress_callback(100, 100, f"{label} 安装完成（{copied} 个文件）")
             return True, ""
 
         except subprocess.TimeoutExpired:
@@ -764,7 +880,7 @@ class ComponentManager:
         valid, msg = self._verify_file(local_path)
         if not valid:
             if progress_callback:
-                progress_callback(0, 100, f"⚠ 安装包不完整({msg})，重新下载 {label}...")
+                progress_callback(0, 100, f"安装包不完整({msg})，重新下载 {label}...")
             import shutil
             shutil.rmtree(clone_path, ignore_errors=True)
             clone_path, err = self._ensure_cloned(gc, component_name, progress_callback, label)
@@ -787,7 +903,7 @@ class ComponentManager:
             if setup_type == "zip" and exe_name:
                 # Extract .zip to find the installer .exe
                 if progress_callback:
-                    progress_callback(60, 100, f"📦 正在解压 {label}...")
+                    progress_callback(60, 100, f"正在解压 {label}...")
 
                 import zipfile
                 extract_dir = tempfile.mkdtemp(prefix=f"winbridge_{component_name}_")
@@ -802,7 +918,7 @@ class ComponentManager:
                 installer_exe = local_path
 
             if progress_callback:
-                progress_callback(80, 100, f"⚙ 正在安装 {label} 到容器...")
+                progress_callback(80, 100, f"正在安装 {label} 到容器...")
 
             # Run the installer via wine with silent flags
             env = os.environ.copy()
@@ -820,7 +936,7 @@ class ComponentManager:
                 return False, err_out
 
             if progress_callback:
-                progress_callback(100, 100, f"✅ {label} {version} 安装完成")
+                progress_callback(100, 100, f"{label} {version} 安装完成")
 
             return True, ""
 
@@ -833,58 +949,160 @@ class ComponentManager:
                 import shutil
                 shutil.rmtree(extract_dir, ignore_errors=True)
 
-    def _install_from_gitcode(self, component_name: str, info: dict,
-                              bottle_path: str,
-                              progress_callback: Callable = None) -> tuple:
-        """Install a component (DXVK/VKD3D) from a GitCode release tarball."""
+    @staticmethod
+    def _extract_archive(archive_path: str, dest_dir: str) -> tuple:
+        """Extract a .tar.gz / .tar.xz / .tar.zst archive into dest_dir.
+
+        Returns (success: bool, error: str).
+        """
+        path = str(archive_path)
+        if path.lower().endswith((".tar.zst", ".tzst")):
+            # tarfile (as of Python 3.13) has no zstd support — stream the
+            # decompressed bytes from the zstd CLI straight into tarfile.
+            try:
+                proc = subprocess.Popen(["zstd", "-dc", path],
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE)
+            except FileNotFoundError:
+                return False, "未找到 zstd 命令，无法解压 .tar.zst（请安装 zstd）"
+            try:
+                with tarfile.open(fileobj=proc.stdout, mode="r|") as tf:
+                    tf.extractall(dest_dir)
+            except (tarfile.TarError, EOFError, OSError) as e:
+                proc.kill()
+                proc.wait()
+                return False, f"解压失败: {e}"
+            finally:
+                if proc.stdout:
+                    proc.stdout.close()
+            err_out = proc.stderr.read().decode("utf-8", "replace").strip() if proc.stderr else ""
+            if proc.stderr:
+                proc.stderr.close()
+            if proc.wait() != 0:
+                return False, f"zstd 解压失败: {err_out[:200]}"
+            return True, ""
+
+        try:
+            with tarfile.open(path, "r:*") as tf:
+                tf.extractall(dest_dir)
+            return True, ""
+        except (tarfile.TarError, EOFError, OSError) as e:
+            return False, f"解压失败: {e}"
+
+    def _install_precompiled_tarball(self, component_name: str, info: dict,
+                                     bottle_path: str,
+                                     progress_callback: Callable = None) -> tuple:
+        """Install a precompiled component (DXVK/VKD3D/FAudio) from a release tarball.
+
+        Unlike the source-clone path, this needs no meson/ninja — just download,
+        extract, copy the x32/x64 DLLs into the bottle and register overrides.
+        """
         gc = info["gitcode"]
         label = info["label"]
         version = gc["version"]
-        setup_script = gc["setup_script"]
+        tarball_url = gc["tarball_url"]
+        tarball_file = gc.get("tarball_file", tarball_url.split("/")[-1])
+        dlls = gc.get("dlls", [])
 
         if progress_callback:
             progress_callback(0, 100, f"准备安装 {label} {version}...")
 
-        # Clone the gitcode repo to cache
-        clone_path, err = self._ensure_cloned(gc, component_name, progress_callback, label)
-        if not clone_path:
+        cache_dir = self.config.cache_dir / component_name
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        local_path = str(cache_dir / tarball_file)
+
+        if progress_callback:
+            progress_callback(30, 100, f"正在下载 {label}...")
+        ok, err = self._download_and_verify(tarball_url, local_path, progress_callback, label)
+        if not ok:
             return False, err
 
         if progress_callback:
-            progress_callback(60, 100, f"📦 正在准备 {label}...")
-
-        # The cloned repo IS the extracted content; find setup script
-        setup_path = Path(clone_path) / setup_script
-        if not setup_path.exists():
-            # Search recursively
-            matches = list(Path(clone_path).rglob(setup_script))
-            if not matches:
-                return False, f"在仓库中未找到安装脚本 {setup_script}"
-            setup_path = matches[0]
-
+            progress_callback(70, 100, f"正在解压 {label}...")
+        extract_dir = tempfile.mkdtemp(prefix=f"winbridge_{component_name}_")
         try:
+            ok, err = self._extract_archive(local_path, extract_dir)
+            if not ok:
+                return False, err
+
+            # Determine bottle arch for target system dirs
+            arch = "win64"
+            try:
+                from .wine import Wine
+                arch = Wine().get_prefix_arch(bottle_path) or "win64"
+            except Exception:
+                pass
+
+            # In a win64 prefix system32 holds 64-bit DLLs and syswow64 the
+            # 32-bit ones; a win32 prefix has only system32 (32-bit).
+            drive_c = Path(bottle_path) / "drive_c" / "windows"
+            sys32 = drive_c / "system32"
+            syswow64 = drive_c / "syswow64"
+            sys32.mkdir(parents=True, exist_ok=True)
+            if arch == "win64":
+                syswow64.mkdir(parents=True, exist_ok=True)
+
+            # Find the extracted directory that holds the binaries
+            # (e.g. "dxvk-2.7.1/", or the extraction root itself)
+            extracted = Path(extract_dir)
+            candidates = [d for d in extracted.iterdir() if d.is_dir()]
+            src_dir = extracted
+            for d in candidates:
+                if (d / "x32").exists() or (d / "x64").exists():
+                    src_dir = d
+                    break
+            else:
+                if candidates:
+                    src_dir = candidates[0]
+
+            copied = 0
+            # x32 → syswow64 on win64 bottles, system32 on win32 bottles
+            x32_target = syswow64 if arch == "win64" else sys32
+            x32_dir = src_dir / "x32"
+            if x32_dir.exists():
+                for dll_name in dlls:
+                    src_dll = x32_dir / f"{dll_name}.dll"
+                    if src_dll.exists():
+                        shutil.copy2(str(src_dll), str(x32_target / f"{dll_name}.dll"))
+                        copied += 1
+
+            # x64 → system32 (win64 bottles only)
+            if arch == "win64":
+                x64_dir = src_dir / "x64"
+                if x64_dir.exists():
+                    for dll_name in dlls:
+                        src_dll = x64_dir / f"{dll_name}.dll"
+                        if src_dll.exists():
+                            shutil.copy2(str(src_dll), str(sys32 / f"{dll_name}.dll"))
+                            copied += 1
+
+            if copied == 0:
+                return False, "未找到任何需要安装的 DLL 文件"
+
+            # Register DLL overrides in the Wine registry
+            try:
+                from .wine import Wine
+                w = Wine(self.config.wine_path)
+                for dll_name in dlls:
+                    try:
+                        w.run_cmd(bottle_path,
+                                  f'reg add "HKCU\\Software\\Wine\\DllOverrides" '
+                                  f'/v {dll_name} /d native,builtin /f',
+                                  timeout=30)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             if progress_callback:
-                progress_callback(80, 100, f"⚙ 正在安装 {label} 到容器...")
-
-            # Run the setup script
-            result = subprocess.run(
-                ["bash", str(setup_path), "install", bottle_path],
-                capture_output=True, text=True, timeout=300
-            )
-
-            if result.returncode != 0:
-                err_out = result.stderr.strip() or result.stdout.strip() or "安装脚本执行失败"
-                return False, err_out
-
-            if progress_callback:
-                progress_callback(100, 100, f"✅ {label} {version} 安装完成")
-
+                progress_callback(100, 100, f"{label} {version} 安装完成（{copied} 个文件）")
             return True, ""
 
-        except subprocess.TimeoutExpired:
-            return False, f"安装超时（300秒）"
         except Exception as e:
             return False, str(e)
+        finally:
+            import shutil as _sh
+            _sh.rmtree(extract_dir, ignore_errors=True)
 
     def _install_directx_redist(self, component_name: str, info: dict,
                                 bottle_path: str,
@@ -927,7 +1145,7 @@ class ComponentManager:
                     return False, f"缓存损坏，重新下载失败: {err}"
 
         if progress_callback:
-            progress_callback(50, 100, f"📦 正在提取 {gc_label}...")
+            progress_callback(50, 100, f"正在提取 {gc_label}...")
 
         extract_dir = tempfile.mkdtemp(prefix=f"winbridge_{component_name}_")
         try:
@@ -976,7 +1194,7 @@ class ComponentManager:
                 )
 
             if progress_callback:
-                progress_callback(100, 100, f"✅ {gc_label} 安装完成 ({len(installed)} 个文件)")
+                progress_callback(100, 100, f"{gc_label} 安装完成 ({len(installed)} 个文件)")
 
             return True, ""
 
@@ -1040,7 +1258,7 @@ class ComponentManager:
             registered = 0
 
         if progress_callback:
-            progress_callback(100, 100, f"✅ {info['label']} 安装完成（{total} 字体，{registered} 已注册）")
+            progress_callback(100, 100, f"{info['label']} 安装完成（{total} 字体，{registered} 已注册）")
 
         return True, ""
 
@@ -1073,6 +1291,11 @@ class ComponentManager:
             # some SourceForge URLs in CN networks (0 B/s until timeout), which
             # freezes the UI. curl is more resilient and respects our timeouts.
             env["WINETRICKS_DOWNLOADER"] = "curl"
+            # winetricks fetches many assets (fonts etc.) straight from
+            # GitHub; give it the same mirror list so those go through a
+            # mirror too. winetricks retries with the next prefix — the
+            # original GitHub URL is used as the final fallback.
+            env["WINETRICKS_GH_MIRROR"] = " ".join(GITHUB_MIRRORS)
             # Force winetricks to trust the local cache without sha256
             # verification. Our pre-downloaded files in components/ may not
             # match winetricks's recorded sha (different mirror, re-packed),
@@ -1182,23 +1405,23 @@ class ComponentManager:
                     val_clean = val.replace(",", ".")
                     unit_clean = unit.upper() if unit else ""
                     if unit_clean:
-                        speed_str = f" ⚡{val_clean} {unit_clean}B/s"
+                        speed_str = f"  {val_clean} {unit_clean}B/s"
                     else:
-                        speed_str = f" ⚡{val_clean} B/s"
+                        speed_str = f"  {val_clean} B/s"
 
                 if "downloading" in lower or "download" in lower:
                     if progress_callback:
-                        progress_callback(50, 100, f"📥{speed_str} {line[:60]}")
+                        progress_callback(50, 100, f"正在下载{speed_str}  {line[:60]}")
                 elif "installing" in lower or "extracting" in lower:
                     if progress_callback:
-                        progress_callback(70, 100, f"📦{speed_str} {line[:60]}")
+                        progress_callback(70, 100, f"正在安装{speed_str}  {line[:60]}")
                 elif "executing" in lower or "running" in lower:
                     if progress_callback:
-                        progress_callback(80, 100, f"⚙{speed_str} {line[:60]}")
+                        progress_callback(80, 100, f"正在执行{speed_str}  {line[:60]}")
                 elif "warning" in lower or "fixme" in lower:
                     pass
                 elif progress_callback:
-                    prefix = f"📥{speed_str}" if speed_str else "📥 "
+                    prefix = f"处理中{speed_str}  " if speed_str else "处理中  "
                     progress_callback(50, 100, f"{prefix}{line[:60]}")
 
                 # Collect error lines for the final log
@@ -1241,9 +1464,9 @@ class ComponentManager:
 
             if progress_callback:
                 if success:
-                    progress_callback(100, 100, f"✅ {info['label']} 安装完成")
+                    progress_callback(100, 100, f"{info['label']} 安装完成")
                 else:
-                    progress_callback(0, 100, f"❌ {info['label']} 安装失败")
+                    progress_callback(0, 100, f"{info['label']} 安装失败")
 
             # Auto-register installed fonts into the Wine registry so GDI
             # apps can enumerate them. winetricks only copies font files
@@ -1269,7 +1492,7 @@ class ComponentManager:
         except Exception as e:
             err = str(e)
             if progress_callback:
-                progress_callback(0, 100, f"❌ 安装失败: {err[:50]}")
+                progress_callback(0, 100, f"安装失败: {err[:50]}")
             return False, err
 
     def get_available_components(self) -> List[dict]:

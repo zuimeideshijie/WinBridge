@@ -62,9 +62,47 @@ def apply_theme(app, theme_manager: ThemeManager):
     font.setStyleHint(QFont.SansSerif, QFont.PreferDefault)
     app.setFont(font)
 
+    # Fusion renders identically on every desktop, so the stylesheet and the
+    # palette are the only things that decide how the app looks.
+    app.setStyle("Fusion")
+    app.setPalette(theme_manager.build_palette())
+
     # Generate and apply the global stylesheet from the theme
     stylesheet = theme_manager.generate_stylesheet()
     app.setStyleSheet(stylesheet)
+
+
+def _parse_launch_args(argv):
+    """Parse ``--bottle NAME --run TARGET`` (used by desktop shortcuts)."""
+    bottle = target = None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--bottle" and i + 1 < len(argv):
+            bottle = argv[i + 1]
+            i += 2
+        elif arg == "--run" and i + 1 < len(argv):
+            target = argv[i + 1]
+            i += 2
+        else:
+            i += 1
+    return bottle, target
+
+
+def _launch_and_exit(config, bottle_name: str, target: str):
+    """Run a program inside a bottle without showing the window."""
+    from winbridge.core.bottle import BottleManager
+
+    manager = BottleManager(config)
+    bottle = manager.get_bottle(bottle_name)
+    if not bottle:
+        print(f"未找到容器: {bottle_name}", file=sys.stderr)
+        return 2
+    if not os.path.exists(target):
+        print(f"程序不存在: {target}", file=sys.stderr)
+        return 3
+    bottle.run(target)
+    return 0
 
 
 def main():
@@ -74,11 +112,17 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("WinBridge")
-    app.setApplicationVersion("0.1.2")
+    app.setApplicationVersion("1.2.0")
     app.setOrganizationName("WinBridge")
 
     # Initialize theme
     config = Config()
+
+    # Desktop shortcuts launch straight into the program, no window
+    launch_bottle, launch_target = _parse_launch_args(sys.argv[1:])
+    if launch_bottle and launch_target:
+        sys.exit(_launch_and_exit(config, launch_bottle, launch_target))
+
     # Initialize theme manager with config
     _theme_manager = ThemeManager(config)
 

@@ -1,5 +1,66 @@
 # 更新日志
 
+## [1.2.0] - 2026-11-07
+
+### 快捷方式
+
+- **只显示当前容器内的应用**：不再扫描宿主 Linux 桌面；来源限定为容器内的
+  桌面/开始菜单 `.lnk` 与 `Program Files` 下的可执行文件
+- **持久化记录**：快捷方式写入 `bottle.json`，删除 Windows 桌面上的 `.lnk` 后
+  条目依然保留；图标缺失或程序被删除时条目变灰而不是消失
+- **图标**：新增 PE 资源解析（`shortcuts.extract_icon`），从 exe 的
+  `RT_GROUP_ICON` / `RT_ICON` 生成 `.ico` 缓存；Wine 生成的 exe 常缺
+  `GROUP_ICON`，此时直接取最大 `RT_ICON`。图标在后台线程提取，不阻塞界面
+- **右键菜单**：打开 / 重命名（只改显示名，不动程序文件）/ 添加到桌面 / 卸载
+- **卸载**：删除应用自己的安装目录（仅限 `Program Files`、`ProgramData`、
+  `AppData\Local\Programs` 等独立目录，系统程序与共享目录一律拒绝）、容器内相关
+  快捷方式、桌面上的 `.desktop`，并移除记录；确认框会先列出目录、占用空间与将删除
+  的快捷方式数量，注册表残留不做处理
+- **桌面项**：生成的 `.desktop` 带图标（`.ico` 转 PNG，失败时回退应用 logo），
+  `Exec` 走 `winbridge --bottle <容器> --run <程序>`，双击即启动
+- **新增 `--bottle` / `--run` 启动参数**：供桌面项调用，只启动程序不打开主窗口
+
+### 界面重写
+
+- **统一的视觉系统**：`theme.py` 重写为唯一视觉来源（色板 + 全局 QSS + 语义化
+  角色名如 `btnPrimary` / `card` / `sectionTitle`），明色与暗色两套配色同等完整，
+  默认跟随系统，可在「视图」菜单切换
+- **收敛内联样式**：主窗口、容器详情、各对话框的 150+ 处 `setStyleSheet` 全部
+  移除，改为 `objectName` 角色 + 全局 QSS；不再有硬编码色值导致的暗色模式错乱
+- **去除模板感**：去掉标题栏渐变、卡片投影、彩色渐变按钮与 emoji 图标；改为平面
+  分层、1px 细边框、单一强调色与统一的 4/8px 间距
+- **状态文案去装饰**：下载/安装进度不再带 📥 ✅ ⚙ 📦 等前缀，改为「正在下载 /
+  正在安装 / 处理中」等纯文字
+- **环境类型**：新增 `ENVIRONMENT_LABELS` 与 `environment_key()`，兼容旧容器里
+  保存的中文环境字符串（如「游戏/多媒体 (gaming)」），下拉框改为按 key 存储
+
+### 组件下载源更新
+
+- **GitHub 资源统一走镜像源**：`download.py` 新增镜像层，所有 `github.com` /
+  `raw.githubusercontent.com` 资源按 `gh-proxy.org → v6.gh-proxy.org →
+  gh-proxy.com → ghproxy.net → ghfast.top → 直连` 顺序尝试，记住可用的镜像并
+  后续优先使用；微软下载源（aka.ms、download.microsoft.com、
+  download.visualstudio.microsoft.com）保持直连不变
+- **winetricks 内的 GitHub 下载同步走镜像**：新增 `WINETRICKS_GH_MIRROR` 钩子，
+  由 WinBridge 自动注入镜像列表；首次尝试第一个镜像，重试时依次换下一个，用尽后
+  回退原始地址（未设置该变量时行为与上游一致）。corefonts 的硬编码镜像前缀已还原
+  为原始 GitHub 地址，交由该钩子统一改写
+- **DXVK / VKD3D 改用预编译包**：DXVK 2.7.1 与 VKD3D-PROTON 2.14.1（`.tar.zst`）
+  直接下载解压，无需 meson/ninja
+- **FAudio 改为预编译包**：下载 Kron4ek FAudio-Builds 20.07（`.tar.xz`），不再克隆
+  源码（上游源码仓库没有安装脚本）
+- **`.tar.zst` 支持**：校验用 `zstd -t`，解压用 `zstd -dc` 流式喂给 tarfile
+
+### 问题修复
+
+- **修复 VKD3D 下载 404**：vkd3d-proton 只发布 `.tar.zst`，原先的 `.tar.gz` 并不存在
+- **修复 DXVK/VKD3D DLL 落位颠倒**：win64 容器中 x64 → `system32`、x32 → `syswow64`
+  （此前写反，DXVK/VKD3D 装上也不生效）
+
+### 其他
+
+- 下载进度会显示当前使用的镜像主机，例如「正在下载 DXVK（镜像 gh-proxy.org）」
+
 ## [0.1.2] - 2026-08-18
 
 ### 新增功能

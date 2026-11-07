@@ -1,4 +1,4 @@
-"""WinBridge main window — Windows-native styled main application window."""
+"""WinBridge main window."""
 
 import os
 from pathlib import Path
@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
     QAction, QActionGroup, QSizePolicy, QSpacerItem,
 )
 from ..core.config import Config
-from ..core.bottle import Bottle, BottleManager
+from ..core.bottle import Bottle, BottleManager, environment_key, environment_label
 from ..core.wine import Wine
 from ..core.download import ComponentManager, COMPONENT_MAP
 from ..core.theme import ThemeManager
@@ -20,99 +20,62 @@ from ..core.wine_updater import WineUpdater
 from .bottle_detail import BottleDetailWidget
 from .dialogs import CreateBottleDialog, FirstRunDialog, TaskManagerDialog
 
-FONT_FAMILY = "'Segoe UI', 'Noto Sans CJK SC', 'Microsoft YaHei', 'WenQuanYi Micro Hei', sans-serif"
+# Environment → chip role (label text comes from core.bottle)
+ENV_CHIP_ROLES = {
+    "gaming": "chipGaming",
+    "office": "chipOffice",
+    "custom": "chipCustom",
+}
 
 
 class BottleListItem(QWidget):
-    """A single bottle item in the sidebar list — Windows native style."""
+    """A single bottle row in the sidebar."""
 
     def __init__(self, bottle: Bottle, parent=None):
         super().__init__(parent)
         self.bottle = bottle
+        self.setObjectName("bottleItem")
         self.setup_ui()
 
     def setup_ui(self):
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(10)
+        layout.setContentsMargins(10, 7, 10, 7)
+        layout.setSpacing(9)
 
-        # Icon area
         icon_label = QLabel()
-        icon_label.setFixedSize(36, 36)
+        icon_label.setObjectName("avatar")
+        icon_label.setFixedSize(30, 30)
         icon_label.setAlignment(Qt.AlignCenter)
         icon_label.setText(self.bottle.name[0].upper() if self.bottle.name else "?")
-        icon_label.setStyleSheet(f"""
-            QLabel {{
-                font-family: {FONT_FAMILY};
-                border-radius: 4px;
-                font-size: 16px;
-                font-weight: 600;
-                background: #e8f0fe;
-                color: #4a90d9;
-            }}
-        """)
         layout.addWidget(icon_label)
 
-        # Info area
         info_layout = QVBoxLayout()
         info_layout.setSpacing(1)
 
         name_label = QLabel(self.bottle.name)
-        name_label.setStyleSheet(f"""
-            font-size: 13px;
-            font-weight: 600;
-            color: #1a1a2e;
-            font-family: {FONT_FAMILY};
-        """)
+        name_label.setObjectName("itemName")
+        name_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         info_layout.addWidget(name_label)
 
-        details_text = f"{self.bottle.arch.replace('win', 'Win')} · {self.bottle.windows_version} · {self.bottle.drive_c_size}"
+        details_text = " · ".join([
+            self.bottle.arch.replace("win", "Win"),
+            self.bottle.windows_version,
+        ])
         detail_label = QLabel(details_text)
-        detail_label.setStyleSheet(f"""
-            font-size: 11px;
-            color: #888888;
-            font-family: {FONT_FAMILY};
-        """)
+        detail_label.setObjectName("itemDetail")
+        detail_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         info_layout.addWidget(detail_label)
 
         layout.addLayout(info_layout, 1)
 
-        # Environment badge
-        env_label = QLabel(self.bottle.environment.capitalize())
-        colors = {
-            "gaming": "#e74c3c",
-            "office": "#3498db",
-            "custom": "#2ecc71",
-        }
-        env_color = colors.get(self.bottle.environment, "#95a5a6")
-        env_label.setStyleSheet(f"""
-            QLabel {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid {env_color}80;
-                border-radius: 3px;
-                padding: 1px 6px;
-                font-size: 10px;
-                font-weight: 600;
-                color: {env_color};
-                background: {env_color}15;
-            }}
-        """)
+        env_label = QLabel(environment_label(self.bottle.environment))
+        env_label.setObjectName(ENV_CHIP_ROLES.get(environment_key(self.bottle.environment), "chipNeutral"))
         env_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(env_label)
 
-        self.setStyleSheet("""
-            BottleListItem {
-                border-radius: 4px;
-                border: 1px solid transparent;
-            }
-            BottleListItem:hover {
-                background: #f5f5f5;
-            }
-        """)
-
 
 class MainWindow(QMainWindow):
-    """Main application window — Windows native style."""
+    """Main application window."""
 
     def __init__(self, config: Config = None, theme_manager: ThemeManager = None):
         super().__init__()
@@ -148,44 +111,22 @@ class MainWindow(QMainWindow):
 
         # === Header ===
         header = QFrame()
-        header.setFixedHeight(48)
+        header.setFixedHeight(46)
         header.setObjectName("appHeader")
-        header.setStyleSheet("")
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(16, 0, 16, 0)
+        header_layout.setContentsMargins(16, 0, 12, 0)
         header_layout.setSpacing(10)
 
         # App icon + title
         title_label = QLabel("WinBridge")
-        title_label.setStyleSheet(f"""
-            font-size: 16px;
-            font-weight: 600;
-            color: #ffffff;
-            font-family: {FONT_FAMILY};
-            letter-spacing: 0.3px;
-        """)
+        title_label.setObjectName("appTitle")
         header_layout.addWidget(title_label)
 
         header_layout.addStretch()
 
-        # Theme indicator
-        self.theme_indicator = QLabel("☀️")
-        self.theme_indicator.setStyleSheet("font-size: 13px; padding: 0 4px;")
-        header_layout.addWidget(self.theme_indicator)
-
         # Wine version badge
-        wine_ver = QLabel(f"  {self.wine.version}  ")
-        wine_ver.setStyleSheet(f"""
-            QLabel {{
-                font-family: {FONT_FAMILY};
-                font-size: 10px;
-                padding: 2px 8px;
-                border-radius: 3px;
-                font-weight: 500;
-                background: rgba(255,255,255,0.1);
-                color: rgba(255,255,255,0.8);
-            }}
-        """)
+        wine_ver = QLabel(self.wine.version)
+        wine_ver.setObjectName("chipNeutral")
         header_layout.addWidget(wine_ver)
 
         main_layout.addWidget(header)
@@ -198,9 +139,8 @@ class MainWindow(QMainWindow):
 
         # === Sidebar ===
         sidebar = QFrame()
-        sidebar.setFixedWidth(240)
+        sidebar.setFixedWidth(232)
         sidebar.setObjectName("appSidebar")
-        sidebar.setStyleSheet("")
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(0)
@@ -208,97 +148,39 @@ class MainWindow(QMainWindow):
         # Sidebar header
         sidebar_header = QWidget()
         sidebar_header.setObjectName("sidebarHeader")
-        sidebar_header.setStyleSheet("")
         sh_layout = QVBoxLayout(sidebar_header)
-        sh_layout.setContentsMargins(12, 10, 12, 10)
+        sh_layout.setContentsMargins(14, 12, 14, 10)
 
         bottles_label = QLabel("我的容器")
-        bottles_label.setStyleSheet(f"""
-            font-size: 12px;
-            font-weight: 600;
-            color: #444444;
-            font-family: {FONT_FAMILY};
-        """)
+        bottles_label.setObjectName("sectionLabel")
         sh_layout.addWidget(bottles_label)
 
         sidebar_layout.addWidget(sidebar_header)
 
         # Bottle list
         self.bottle_list = QListWidget()
+        self.bottle_list.setObjectName("sidebarList")
         self.bottle_list.setFrameShape(QFrame.NoFrame)
-        self.bottle_list.setSpacing(2)
-        self.bottle_list.setContentsMargins(4, 4, 4, 4)
-        self.bottle_list.setStyleSheet(f"""
-            QListWidget {{
-                font-family: {FONT_FAMILY};
-                border: none;
-                outline: none;
-            }}
-            QListWidget::item {{
-                border: none;
-                padding: 0px;
-                border-radius: 4px;
-            }}
-            QListWidget::item:selected {{
-                border-radius: 4px;
-            }}
-            QListWidget::item:hover {{
-                border-radius: 4px;
-            }}
-        """)
+        self.bottle_list.setSpacing(1)
+        self.bottle_list.setContentsMargins(6, 6, 6, 6)
+        self.bottle_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.bottle_list.itemClicked.connect(self.on_bottle_selected)
         sidebar_layout.addWidget(self.bottle_list, 1)
 
         # Sidebar bottom buttons
         sidebar_bottom = QWidget()
         sidebar_bottom.setObjectName("sidebarBottom")
-        sidebar_bottom.setStyleSheet("")
         sb_layout = QVBoxLayout(sidebar_bottom)
-        sb_layout.setContentsMargins(8, 8, 8, 8)
+        sb_layout.setContentsMargins(10, 10, 10, 10)
         sb_layout.setSpacing(6)
 
         btn_create = QPushButton("新建容器")
-        btn_create.setStyleSheet(f"""
-            QPushButton {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #4a90d9;
-                border-radius: 3px;
-                padding: 7px;
-                font-size: 13px;
-                font-weight: 600;
-                background: #4a90d9;
-                color: #ffffff;
-            }}
-            QPushButton:hover {{
-                background: #357abd;
-                border-color: #357abd;
-            }}
-            QPushButton:pressed {{
-                background: #2a6cb5;
-                border-color: #2a6cb5;
-            }}
-        """)
+        btn_create.setObjectName("btnPrimary")
         btn_create.clicked.connect(self.show_create_dialog)
         sb_layout.addWidget(btn_create)
 
         btn_import = QPushButton("导入容器")
-        btn_import.setStyleSheet(f"""
-            QPushButton {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 6px;
-                font-size: 12px;
-                background: #ffffff;
-                color: #333333;
-            }}
-            QPushButton:hover {{
-                background: #e5e5e5;
-            }}
-            QPushButton:pressed {{
-                background: #d9d9d9;
-            }}
-        """)
+        btn_import.setObjectName("btnDefault")
         btn_import.clicked.connect(self.import_bottle)
         sb_layout.addWidget(btn_import)
 
@@ -326,31 +208,11 @@ class MainWindow(QMainWindow):
 
         # Status bar
         self.status_bar = QStatusBar()
-        self.status_bar.setStyleSheet(f"""
-            QStatusBar {{
-                font-family: {FONT_FAMILY};
-                font-size: 12px;
-            }}
-        """)
         self.progress_bar = QProgressBar()
-        self.progress_bar.setFixedWidth(200)
-        self.progress_bar.setFixedHeight(16)
+        self.progress_bar.setObjectName("progressLabeled")
+        self.progress_bar.setFixedWidth(180)
+        self.progress_bar.setTextVisible(False)
         self.progress_bar.setVisible(False)
-        self.progress_bar.setStyleSheet(f"""
-            QProgressBar {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                text-align: center;
-                font-size: 10px;
-                background: #ffffff;
-                color: #333333;
-            }}
-            QProgressBar::chunk {{
-                background: #4a90d9;
-                border-radius: 2px;
-            }}
-        """)
         self.status_bar.addPermanentWidget(self.progress_bar)
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("就绪")
@@ -359,76 +221,42 @@ class MainWindow(QMainWindow):
         """Create the welcome/landing page."""
         page = QWidget()
         page.setObjectName("welcomePage")
-        page.setStyleSheet("")
         layout = QVBoxLayout(page)
         layout.setAlignment(Qt.AlignCenter)
 
         # Welcome card
         card = QFrame()
-        card.setFixedSize(440, 320)
         card.setObjectName("welcomeCard")
-        card.setStyleSheet("")
+        card.setFixedWidth(420)
         card_layout = QVBoxLayout(card)
         card_layout.setAlignment(Qt.AlignCenter)
-        card_layout.setSpacing(12)
-        card_layout.setContentsMargins(36, 36, 36, 36)
+        card_layout.setSpacing(10)
+        card_layout.setContentsMargins(40, 40, 40, 40)
 
         logo = QPixmap(str(Path(__file__).parent.parent / "resources" / "logo.png"))
-        logo = logo.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        logo = logo.scaled(56, 56, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         icon = QLabel()
         icon.setPixmap(logo)
         icon.setAlignment(Qt.AlignCenter)
-        icon.setFixedSize(72, 72)
+        icon.setFixedSize(64, 64)
         card_layout.addWidget(icon)
 
-        title = QLabel("欢迎使用 WinBridge")
+        title = QLabel("WinBridge")
+        title.setObjectName("pageTitle")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet(f"""
-            font-size: 22px;
-            font-weight: 600;
-            color: #1a1a2e;
-            font-family: {FONT_FAMILY};
-        """)
         card_layout.addWidget(title)
 
-        desc = QLabel(
-            "基于 Wine 的 Windows 应用容器管理器\n"
-            "为您的 Linux 桌面带来便捷的 Wine 体验"
-        )
+        desc = QLabel("Wine 容器管理器\n为 Windows 应用准备独立的运行环境")
+        desc.setObjectName("muted")
         desc.setAlignment(Qt.AlignCenter)
-        desc.setStyleSheet(f"""
-            font-size: 12px;
-            color: #666666;
-            font-family: {FONT_FAMILY};
-            line-height: 1.5;
-        """)
         desc.setWordWrap(True)
         card_layout.addWidget(desc)
 
-        card_layout.addSpacing(8)
+        card_layout.addSpacing(12)
 
-        btn_new = QPushButton("创建第一个容器")
-        btn_new.setFixedWidth(200)
-        btn_new.setStyleSheet(f"""
-            QPushButton {{
-                font-family: {FONT_FAMILY};
-                border: 1px solid #4a90d9;
-                border-radius: 3px;
-                padding: 8px 24px;
-                font-size: 13px;
-                font-weight: 600;
-                background: #4a90d9;
-                color: #ffffff;
-            }}
-            QPushButton:hover {{
-                background: #357abd;
-                border-color: #357abd;
-            }}
-            QPushButton:pressed {{
-                background: #2a6cb5;
-                border-color: #2a6cb5;
-            }}
-        """)
+        btn_new = QPushButton("新建容器")
+        btn_new.setObjectName("btnPrimary")
+        btn_new.setFixedWidth(160)
         btn_new.clicked.connect(self.show_create_dialog)
         card_layout.addWidget(btn_new, 0, Qt.AlignCenter)
 
@@ -438,35 +266,6 @@ class MainWindow(QMainWindow):
     def setup_menu(self):
         """Setup the menu bar."""
         menubar = self.menuBar()
-        menubar.setStyleSheet(f"""
-            QMenuBar {{
-                font-family: {FONT_FAMILY};
-                font-size: 12px;
-            }}
-            QMenuBar::item:selected {{
-                background: #e0e0e0;
-            }}
-            QMenu {{
-                font-family: {FONT_FAMILY};
-                background: #ffffff;
-                border: 1px solid #cccccc;
-                padding: 4px;
-            }}
-            QMenu::item {{
-                padding: 4px 24px;
-                font-size: 12px;
-                color: #333333;
-            }}
-            QMenu::item:selected {{
-                background: #4a90d9;
-                color: #ffffff;
-            }}
-            QMenu::separator {{
-                height: 1px;
-                background: #e0e0e0;
-                margin: 4px 8px;
-            }}
-        """)
 
         # File menu
         file_menu = menubar.addMenu("文件(&F)")
@@ -508,14 +307,20 @@ class MainWindow(QMainWindow):
         kill_action.triggered.connect(self.kill_wine)
         tools_menu.addAction(kill_action)
 
-        # View menu — light theme only (dark/system modes removed)
+        # View menu — light / dark / follow system
         view_menu = menubar.addMenu("视图(&V)")
+        self.theme_group = QActionGroup(self)
+        self.theme_group.setExclusive(True)
 
-        self.action_light = QAction("明色模式", self)
-        self.action_light.setCheckable(True)
-        self.action_light.setChecked(True)
-        self.action_light.triggered.connect(lambda: self.switch_theme("light"))
-        view_menu.addAction(self.action_light)
+        self.theme_actions = {}
+        for mode, label in (("system", "跟随系统"), ("light", "明色模式"), ("dark", "暗色模式")):
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setChecked(self.theme_manager.mode == mode)
+            action.triggered.connect(lambda _checked, m=mode: self.switch_theme(m))
+            self.theme_group.addAction(action)
+            view_menu.addAction(action)
+            self.theme_actions[mode] = action
 
         # Help menu
         help_menu = menubar.addMenu("帮助(&H)")
@@ -534,10 +339,26 @@ class MainWindow(QMainWindow):
         for bottle in bottles:
             item = QListWidgetItem()
             widget = BottleListItem(bottle)
-            item.setSizeHint(widget.sizeHint())
+            item.setSizeHint(QSize(0, 52))
             item.setData(Qt.UserRole, bottle.name)
             self.bottle_list.addItem(item)
             self.bottle_list.setItemWidget(item, widget)
+
+        # Row widths follow the sidebar; apply once the layout has settled
+        QTimer.singleShot(0, self._resize_bottle_rows)
+
+    def _resize_bottle_rows(self):
+        """Keep sidebar rows exactly as wide as the list viewport."""
+        width = max(self.bottle_list.viewport().width() - 4, 80)
+        for i in range(self.bottle_list.count()):
+            item = self.bottle_list.item(i)
+            if item.sizeHint().width() != width:
+                item.setSizeHint(QSize(width, 52))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "bottle_list"):
+            self._resize_bottle_rows()
 
     def on_bottle_selected(self, item):
         """Handle bottle selection from the list."""
@@ -569,7 +390,7 @@ class MainWindow(QMainWindow):
         if dialog.exec_():
             name = dialog.bottle_name.text().strip()
             arch = "win64" if dialog.arch_64.isChecked() else "win32"
-            env = dialog.environment_combo.currentText().lower()
+            env = dialog.environment_combo.currentData() or "custom"
             win_ver = dialog.windows_version_combo.currentText()
             desc = dialog.description.toPlainText().strip()
             wine_path = dialog.get_wine_path()
@@ -768,105 +589,60 @@ class MainWindow(QMainWindow):
 
         dialog = QDialog(self)
         dialog.setWindowTitle("关于 WinBridge")
-        dialog.setFixedSize(420, 320)
+        dialog.setFixedWidth(420)
 
         layout = QVBoxLayout(dialog)
-        layout.setSpacing(8)
-        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(6)
+        layout.setContentsMargins(28, 24, 28, 20)
 
-        # Logo
         logo_pix = QPixmap(str(Path(__file__).parent.parent / "resources" / "logo.png"))
-        logo_pix = logo_pix.scaled(56, 56, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        logo_pix = logo_pix.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         logo_label = QLabel()
         logo_label.setPixmap(logo_pix)
         logo_label.setAlignment(Qt.AlignCenter)
-        logo_label.setFixedSize(64, 64)
-        layout.addWidget(logo_label)
+        logo_label.setFixedSize(56, 56)
+        layout.addWidget(logo_label, 0, Qt.AlignHCenter)
 
         title = QLabel("WinBridge")
+        title.setObjectName("pageTitle")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size: 22px; font-weight: 600; color: #1a1a2e;")
         layout.addWidget(title)
 
-        version = QLabel("版本 0.1.2")
+        version = QLabel("版本 1.2.0 · Wine 容器管理器")
+        version.setObjectName("muted")
         version.setAlignment(Qt.AlignCenter)
-        version.setStyleSheet("font-size: 12px; color: #888888;")
         layout.addWidget(version)
 
-        desc = QLabel("基于 Wine 的 Windows 应用容器管理器")
-        desc.setAlignment(Qt.AlignCenter)
-        desc.setStyleSheet("font-size: 13px; color: #333333; margin-top: 8px;")
-        layout.addWidget(desc)
+        layout.addSpacing(12)
 
-        # Info card
         info = QLabel(
-            f"Wine 版本: {self.wine.version}\n"
-            f"容器目录: {self.config.bottles_dir}"
+            f"Wine 版本　{self.wine.version}\n"
+            f"容器目录　{self.config.bottles_dir}"
         )
-        info.setStyleSheet("""
-            font-size: 12px; color: #555555; line-height: 1.6;
-            background: #f5f5f5; border-radius: 4px; padding: 10px 14px;
-        """)
+        info.setObjectName("regInfo")
+        info.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(info)
 
-        layout.addStretch()
+        layout.addSpacing(12)
 
-        # Buttons
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(8)
 
         btn_check = QPushButton("检查 Wine 更新")
-        btn_check.setStyleSheet("""
-            QPushButton {
-                font-family: 'Segoe UI', sans-serif;
-                border: 1px solid #4a90d9;
-                border-radius: 3px;
-                padding: 6px 16px;
-                font-size: 12px;
-                font-weight: 600;
-                background: #4a90d9;
-                color: #ffffff;
-            }
-            QPushButton:hover { background: #357abd; border-color: #357abd; }
-            QPushButton:pressed { background: #2a6cb5; border-color: #2a6cb5; }
-        """)
+        btn_check.setObjectName("btnDefault")
         btn_check.clicked.connect(lambda: (dialog.accept(), self.check_wine_version()))
         btn_layout.addWidget(btn_check)
 
         btn_manual = QPushButton("用户手册")
-        btn_manual.setStyleSheet("""
-            QPushButton {
-                font-family: 'Segoe UI', sans-serif;
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 6px 16px;
-                font-size: 12px;
-                background: #ffffff;
-                color: #333333;
-            }
-            QPushButton:hover { background: #f5f5f5; }
-            QPushButton:pressed { background: #e8e8e8; }
-        """)
+        btn_manual.setObjectName("btnDefault")
         btn_manual.clicked.connect(lambda: self._open_user_manual(dialog))
         btn_layout.addWidget(btn_manual)
 
         btn_layout.addStretch()
 
         btn_ok = QPushButton("确定")
-        btn_ok.setStyleSheet("""
-            QPushButton {
-                font-family: 'Segoe UI', sans-serif;
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 6px 24px;
-                font-size: 13px;
-                background: #f0f0f0;
-                color: #333333;
-                min-width: 80px;
-            }
-            QPushButton:hover { background: #e5e5e5; }
-            QPushButton:pressed { background: #d9d9d9; }
-        """)
+        btn_ok.setObjectName("btnPrimary")
+        btn_ok.setMinimumWidth(80)
         btn_ok.clicked.connect(dialog.accept)
         btn_layout.addWidget(btn_ok)
 
@@ -881,12 +657,17 @@ class MainWindow(QMainWindow):
 
     def switch_theme(self, mode: str):
         """Switch the application theme."""
-        from main import apply_theme, get_theme
+        from main import apply_theme
         self.theme_manager.set_mode(mode)
         apply_theme(QApplication.instance(), self.theme_manager)
-        is_dark = self.theme_manager.is_dark
-        self.theme_indicator.setText("🌙" if is_dark else "☀️")
-        self.status_bar.showMessage(f"已切换至{self.theme_manager.palette['name']}")
+        action = getattr(self, "theme_actions", {}).get(mode)
+        if action:
+            action.setChecked(True)
+        # Status colours inside tables come from the palette, so refresh them
+        self.detail_page.theme = self.theme_manager
+        if self.detail_page.current_bottle:
+            self.detail_page.refresh_components()
+        self.status_bar.showMessage(f"主题：{self.theme_manager.palette['name']}")
 
     def check_wine_version(self):
         """Check Wine version and prompt for update if available."""
@@ -921,49 +702,33 @@ class MainWindow(QMainWindow):
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Wine 更新可用")
-        dialog.setMinimumWidth(480)
+        dialog.setMinimumWidth(460)
         dialog.setModal(True)
 
         layout = QVBoxLayout(dialog)
-        layout.setSpacing(16)
-        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+        layout.setContentsMargins(26, 22, 26, 22)
 
-        # Title
-        title = QLabel("🍷 Wine 新版本可用")
-        title.setStyleSheet("font-size: 18px; font-weight: 600; color: #1a1a2e;")
+        title = QLabel("Wine 新版本可用")
+        title.setObjectName("dialogTitle")
         layout.addWidget(title)
 
-        # Version info
         info = QLabel(
-            f"本地版本: {local}\n"
-            f"最新版本: {remote}\n\n"
+            f"本地版本　{local}\n"
+            f"最新版本　{remote}\n\n"
             "是否从 GitCode 下载最新的 Wine 源码？"
         )
-        info.setStyleSheet("font-size: 13px; color: #333333; line-height: 1.5;")
+        info.setObjectName("fieldLabel")
         layout.addWidget(info)
 
         # Progress
         self._update_progress = QProgressBar()
+        self._update_progress.setObjectName("progressLabeled")
         self._update_progress.setVisible(False)
-        self._update_progress.setStyleSheet("""
-            QProgressBar {
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                text-align: center;
-                font-size: 10px;
-                background: #ffffff;
-                color: #333333;
-                height: 20px;
-            }
-            QProgressBar::chunk {
-                background: #4a90d9;
-                border-radius: 2px;
-            }
-        """)
         layout.addWidget(self._update_progress)
 
         self._update_status = QLabel("")
-        self._update_status.setStyleSheet("font-size: 11px; color: #888888;")
+        self._update_status.setObjectName("muted")
         self._update_status.setVisible(False)
         layout.addWidget(self._update_status)
 
@@ -972,40 +737,14 @@ class MainWindow(QMainWindow):
         btn_layout.setSpacing(8)
 
         btn_skip = QPushButton("稍后再说")
-        btn_skip.setStyleSheet("""
-            QPushButton {
-                font-family: 'Segoe UI', sans-serif;
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 6px 20px;
-                font-size: 13px;
-                background: #f0f0f0;
-                color: #333333;
-            }
-            QPushButton:hover { background: #e5e5e5; }
-            QPushButton:pressed { background: #d9d9d9; }
-        """)
+        btn_skip.setObjectName("btnDefault")
         btn_skip.clicked.connect(dialog.reject)
         btn_layout.addWidget(btn_skip)
 
         btn_layout.addStretch()
 
         btn_update = QPushButton("立即更新")
-        btn_update.setStyleSheet("""
-            QPushButton {
-                font-family: 'Segoe UI', sans-serif;
-                border: 1px solid #4a90d9;
-                border-radius: 3px;
-                padding: 6px 24px;
-                font-size: 13px;
-                font-weight: 600;
-                background: #4a90d9;
-                color: #ffffff;
-            }
-            QPushButton:hover { background: #357abd; border-color: #357abd; }
-            QPushButton:pressed { background: #2a6cb5; border-color: #2a6cb5; }
-            QPushButton:disabled { background: #d0d0d0; border-color: #d0d0d0; color: #888888; }
-        """)
+        btn_update.setObjectName("btnPrimary")
         btn_update.clicked.connect(lambda: self._start_wine_update(
             dialog, btn_update, btn_skip))
         btn_layout.addWidget(btn_update)
