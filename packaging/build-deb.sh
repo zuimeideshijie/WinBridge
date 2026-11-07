@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build a .deb for WinBridge without debhelper.
-#   ./packaging/build-deb.sh          -> dist/winbridge_<version>_all.deb
+#   ./packaging/build-deb.sh          -> debian/winbridge_<version>_all.deb
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -9,7 +9,7 @@ VERSION=$(python3 -c "import re,pathlib;print(re.search(r'\"([^\"]+)\"', pathlib
 NAME=winbridge
 BUILD="$ROOT/build/deb"
 PKG="$BUILD/${NAME}_${VERSION}_all"
-OUT="$ROOT/dist"
+OUT="$ROOT/debian"
 
 echo "==> 打包 $NAME $VERSION"
 rm -rf "$BUILD"

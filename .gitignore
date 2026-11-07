@@ -28,5 +28,5 @@ export-repo/
 WinBridge-x86_64.flatpak
 *.flatpak
 
-# Debian packaging workspace (not published)
+# Debian package output (build-deb.sh writes here, artifacts stay local)
 debian/
