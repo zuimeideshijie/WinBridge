@@ -67,6 +67,7 @@ class Bottle:
             "wine_path": "",
             "installed_components": [],
             "dll_overrides": {},
+            "component_records": {},
         }
         if self.meta_file.exists():
             try:
@@ -172,6 +173,48 @@ class Bottle:
         self.shortcuts = items
         return True
 
+    def forget_shortcuts_under(self, root) -> int:
+        """Drop every shortcut whose program lives inside `root`.
+
+        Used after deleting an application folder: the app's own entries
+        (updater, uninstaller, translator…) all die with it, so leaving them
+        behind produces "程序文件不存在" on every double-click.
+        Returns how many records were removed.
+        """
+        try:
+            root_path = Path(root).resolve()
+        except (OSError, ValueError):
+            return 0
+        keep, dropped = [], 0
+        for entry in self.shortcuts:
+            target = entry.get("target") or ""
+            try:
+                inside = bool(target) and Path(target).resolve().is_relative_to(root_path)
+            except (OSError, ValueError):
+                inside = False
+            if inside:
+                dropped += 1
+            else:
+                keep.append(entry)
+        if dropped:
+            self.shortcuts = keep
+        return dropped
+
+    def add_shortcut(self, name: str, target: str, source: str = "exe",
+                     icon: str = "") -> bool:
+        """Register a program in the shortcut list.
+
+        Returns False when the same target is already listed, so clicking
+        "添加程序" twice on one exe does not create duplicates.
+        """
+        items = self.shortcuts
+        if any(item.get("target") == target for item in items):
+            return False
+        items.append({"name": name, "target": target,
+                      "source": source, "icon": icon})
+        self.shortcuts = items
+        return True
+
     def rename_shortcut(self, target: str, new_name: str) -> bool:
         """Rename a shortcut's display name (the program file is untouched)."""
         items = self.shortcuts
@@ -233,6 +276,43 @@ class Bottle:
         if name in self._meta["installed_components"]:
             self._meta["installed_components"].remove(name)
             self._save_meta()
+
+    @property
+    def component_records(self) -> Dict[str, Dict]:
+        """What each component put into the container.
+
+        {"dxvk": {"files": ["system32/d3d11.dll", ...],
+                  "overrides": {"d3d11": "native", ...}}}
+        Files are relative to drive_c/windows. Components without a record
+        (winetricks verbs, MSI installers) cannot be reverted file by file.
+        """
+        return self._meta.get("component_records", {})
+
+    def get_component_record(self, name: str) -> Dict:
+        return self.component_records.get(name, {})
+
+    def set_component_record(self, name: str, files: List[str],
+                             overrides: Dict[str, str]):
+        """Remember the files/overrides a component installed."""
+        self._meta.setdefault("component_records", {})[name] = {
+            "files": list(files or []),
+            "overrides": dict(overrides or {}),
+        }
+        self._save_meta()
+
+    def drop_component_record(self, name: str):
+        records = self._meta.get("component_records", {})
+        if records.pop(name, None) is not None:
+            self._save_meta()
+
+    def component_overrides(self, exclude: str = None) -> List[str]:
+        """DLL names still needed by components other than `exclude`."""
+        names = []
+        for component, record in self.component_records.items():
+            if component == exclude:
+                continue
+            names.extend(record.get("overrides", {}))
+        return names
 
     def set_dll_override(self, dll: str, mode: str):
         """Set a DLL override (native, builtin, native,builtin, etc.)."""

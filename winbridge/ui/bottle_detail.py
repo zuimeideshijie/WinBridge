@@ -2,8 +2,9 @@
 
 import os
 import subprocess
+import threading
 from pathlib import Path
-from PyQt5.QtCore import Qt, QSize, pyqtSignal, QThread
+from PyQt5.QtCore import Qt, QSize, pyqtSignal, QThread, QTimer
 from PyQt5.QtGui import QColor, QIcon
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -199,10 +200,15 @@ class BottleDetailWidget(QWidget):
         self.config_tab = self._create_config_tab()
         self.tabs.addTab(self.config_tab, "配置")
 
-        # Tab 5: Registry
-        self.registry_tab = self._create_registry_tab()
+        # Tab 5: Registry — the browser itself opens in its own window, so the
+        # main window stays usable while the (large) registry tree loads.
+        self.registry_panel = self._create_registry_tab()
+        self.registry_tab = QWidget()
         self.tabs.addTab(self.registry_tab, "注册表")
         self._registry_loaded = False
+        self._reg_index = {}
+        self._registry_window = None
+        self._last_tab_index = 0
 
         # Lazy-load registry tree when tab is selected
         self.tabs.currentChanged.connect(self._on_tab_changed)
@@ -381,9 +387,26 @@ class BottleDetailWidget(QWidget):
         self.shortcuts_list.itemDoubleClicked.connect(self._run_shortcut)
         shortcuts_layout.addWidget(self.shortcuts_list)
 
-        shortcuts_hint = QLabel("双击运行 · 右键可打开、重命名或添加到桌面")
+        shortcuts_hint = QLabel("双击运行 · 右键可打开、重命名、添加到桌面或卸载")
         shortcuts_hint.setObjectName("hint")
-        shortcuts_layout.addWidget(shortcuts_hint)
+
+        footer = QHBoxLayout()
+        footer.setSpacing(8)
+        footer.addWidget(shortcuts_hint, 1)
+
+        self.btn_refresh_programs = QPushButton("刷新")
+        self.btn_refresh_programs.setObjectName("btnDefault")
+        self.btn_refresh_programs.setToolTip("重新扫描容器里的程序和快捷方式，并补全图标")
+        self.btn_refresh_programs.clicked.connect(self.refresh_programs)
+        footer.addWidget(self.btn_refresh_programs)
+
+        self.btn_add_program = QPushButton("添加程序")
+        self.btn_add_program.setObjectName("btnDefault")
+        self.btn_add_program.setToolTip("选择一个 .exe，把它加入快捷方式列表")
+        self.btn_add_program.clicked.connect(self.add_program_shortcut)
+        footer.addWidget(self.btn_add_program)
+
+        shortcuts_layout.addLayout(footer)
 
         layout.addWidget(shortcuts_section, 1)
         return tab
@@ -427,6 +450,15 @@ class BottleDetailWidget(QWidget):
         self.btn_install.setObjectName("btnPrimary")
         self.btn_install.clicked.connect(self.install_component)
         btn_layout.addWidget(self.btn_install)
+
+        # Only visible while an install is running: aborts the download (or
+        # the winetricks run) and leaves the bottle untouched.
+        self.btn_cancel_comp = QPushButton("取消")
+        self.btn_cancel_comp.setObjectName("btnDefault")
+        self.btn_cancel_comp.setToolTip("取消正在下载/安装的组件")
+        self.btn_cancel_comp.setVisible(False)
+        self.btn_cancel_comp.clicked.connect(self.cancel_component_install)
+        btn_layout.addWidget(self.btn_cancel_comp)
 
         self.btn_uninstall = QPushButton("卸载选中组件")
         self.btn_uninstall.setObjectName("btnDanger")
@@ -625,6 +657,8 @@ class BottleDetailWidget(QWidget):
         self.reg_tree.setHeaderLabels(["注册表项"])
         self.reg_tree.setMinimumWidth(280)
         self.reg_tree.itemClicked.connect(self._on_reg_item_clicked)
+        # Branches are created lazily as they are expanded (17k keys)
+        self.reg_tree.itemExpanded.connect(self._on_reg_item_expanded)
         splitter.addWidget(self.reg_tree)
 
         # Value display area
@@ -679,17 +713,43 @@ class BottleDetailWidget(QWidget):
         return tab
 
     def _on_tab_changed(self, index: int):
-        """Lazy-load the registry tree when the registry tab is selected.
+        """Clicking the 注册表 tab opens the registry browser in its own window.
 
-        Loading runs in a background thread so the UI never freezes; if the
-        user switches to another tab, the pending load is cancelled.
+        The tab is only a launcher: selection snaps back to the previous tab,
+        so the main window keeps showing the page the user was on. The tree is
+        parsed in a background thread, exactly as before.
         """
         if index == self.tabs.indexOf(self.registry_tab):
-            if not self._registry_loaded and self.current_bottle:
-                self._refresh_registry_tree()
-                self._registry_loaded = True
-        else:
-            self._cancel_registry_load()
+            self.tabs.blockSignals(True)
+            self.tabs.setCurrentIndex(max(0, self._last_tab_index))
+            self.tabs.blockSignals(False)
+            self.open_registry_window()
+            return
+        self._last_tab_index = index
+
+    def open_registry_window(self):
+        """Show (or re-raise) the standalone registry browser window."""
+        if not self.current_bottle:
+            return
+        if self._registry_window is None:
+            window = QDialog(self.window())
+            window.setObjectName("registryWindow")
+            window.setWindowTitle(f"注册表 - {self.current_bottle.name}")
+            window.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint
+                                  | Qt.WindowMinMaxButtonsHint)
+            window.setSizeGripEnabled(True)
+            window_layout = QVBoxLayout(window)
+            window_layout.setContentsMargins(0, 0, 0, 0)
+            window_layout.addWidget(self.registry_panel)
+            window.resize(1080, 720)
+            self._registry_window = window
+
+        self._registry_window.show()
+        self._registry_window.raise_()
+        self._registry_window.activateWindow()
+        if not self._registry_loaded:
+            self._registry_loaded = True
+            self._refresh_registry_tree()
 
     def _cancel_registry_load(self):
         """Cancel a pending background registry load."""
@@ -703,6 +763,7 @@ class BottleDetailWidget(QWidget):
     def _refresh_registry_tree(self):
         """Refresh the registry tree asynchronously (never blocks the UI)."""
         self._cancel_registry_load()
+        self._reg_index = {}
         self.reg_tree.clear()
         self.reg_value_table.setRowCount(0)
         self.reg_key_path.setText("")
@@ -727,7 +788,11 @@ class BottleDetailWidget(QWidget):
         self.reg_source_label.setText("浏览: user.reg + system.reg")
         if key_paths:
             self._build_registry_tree(key_paths)
-        self.reg_tree.expandToDepth(1)
+        # Only the two hives are expanded eagerly: their direct children are
+        # a few dozen items. Everything deeper is created on demand, because
+        # materialising all ~17k keys at once freezes both windows.
+        for i in range(self.reg_tree.topLevelItemCount()):
+            self.reg_tree.topLevelItem(i).setExpanded(True)
 
     def _parse_reg_key_path(self, line: str) -> str:
         """Extract the key path from a .reg line like [Key\\Path] timestamp."""
@@ -739,54 +804,80 @@ class BottleDetailWidget(QWidget):
         return key_path
 
     def _build_registry_tree(self, key_paths: list):
-        """Populate the tree from a list of registry key paths.
+        """Index the key paths and create only the two hive roots.
 
-        ``key_paths`` is a list of full key paths (e.g.
-        "Software\\Microsoft\\Windows NT\\CurrentVersion") parsed in the
-        background thread. Keys are added incrementally, reusing existing
-        parent nodes so duplicate prefixes don't create duplicates.
+        ``key_paths`` are full paths ("HKCU\\Software\\…"). They are folded
+        into a nested dict in one pass (O(n) instead of the previous
+        sibling-scan, which was O(n²) and froze the UI on 17k keys). Tree
+        items are then created lazily as branches are expanded — see
+        ``_on_reg_item_expanded``.
         """
-        root_items = {}  # top_key -> QTreeWidgetItem
-
-        def ensure_item(parent_item, name, full_path):
-            if parent_item is None:
-                item = root_items.get(name)
-                if item is None:
-                    item = QTreeWidgetItem(self.reg_tree, [name])
-                    item.setData(0, Qt.UserRole, name)
-                    root_items[name] = item
-                return item
-            for i in range(parent_item.childCount()):
-                if parent_item.child(i).text(0) == name:
-                    return parent_item.child(i)
-            child = QTreeWidgetItem(parent_item, [name])
-            child.setData(0, Qt.UserRole, full_path)
-            return child
-
+        index = {}
         for key_path in key_paths:
             if not key_path:
                 continue
-            parts = key_path.split("\\\\")
-            cur = None
-            full = ""
-            for part in parts:
-                full = part if not full else full + "\\\\" + part
-                cur = ensure_item(cur, part, full)
+            node = index
+            for part in key_path.split("\\\\"):
+                node = node.setdefault(part, {})
 
-        self._reg_root_items = root_items
+        self._reg_index = index
+        self.reg_tree.clear()
+        self._reg_root_items = {}
+        for root_name in ("HKCU", "HKLM"):
+            children = index.get(root_name)
+            if not children:
+                continue
+            item = QTreeWidgetItem(self.reg_tree, [root_name])
+            item.setData(0, Qt.UserRole, root_name)
+            self._reg_root_items[root_name] = item
+            self._mark_registry_children(item, children)
+
+    def _mark_registry_children(self, item, children: dict):
+        """Attach a placeholder child so the expand arrow shows up."""
+        if not children:
+            return
+        placeholder = QTreeWidgetItem(item, ["加载中…"])
+        placeholder.setFlags(Qt.NoItemFlags)
+        item.setData(0, Qt.UserRole + 1, True)
+
+    @staticmethod
+    def _item_key_path(item) -> str:
+        """Full key path of a tree item ("HKCU\\Software\\…")."""
+        parts = []
+        current = item
+        while current is not None:
+            parts.insert(0, current.text(0))
+            current = current.parent()
+        return "\\\\".join(parts)
+
+    def _on_reg_item_expanded(self, item):
+        """Create one level of children the first time a branch is opened."""
+        if not item.data(0, Qt.UserRole + 1):
+            return
+        item.setData(0, Qt.UserRole + 1, False)
+        item.takeChildren()  # drop the "加载中…" placeholder
+
+        node = self._reg_index
+        for part in self._item_key_path(item).split("\\\\"):
+            node = node.get(part)
+            if not isinstance(node, dict):
+                return
+        self.reg_tree.setUpdatesEnabled(False)
+        try:
+            for name in sorted(node):
+                child = QTreeWidgetItem(item, [name])
+                child.setData(0, Qt.UserRole, name)
+                self._mark_registry_children(child, node[name])
+        finally:
+            self.reg_tree.setUpdatesEnabled(True)
 
     def _on_reg_item_clicked(self, item, column):
         """Handle clicking a registry tree item."""
         self.reg_value_table.setRowCount(0)
+        if item is None or not item.flags() & Qt.ItemIsSelectable:
+            return  # the "加载中…" placeholder
 
-        # Get the full key path (reconstruct in .reg format)
-        parts = []
-        cur = item
-        while cur:
-            parts.insert(0, cur.text(0))
-            cur = cur.parent()
-        key_path = "\\\\".join(parts)
-
+        key_path = self._item_key_path(item)
         self.reg_key_path.setText(f"[{key_path}]")
 
         # Read values from the .reg file for this key (only the hive the
@@ -988,6 +1079,13 @@ class BottleDetailWidget(QWidget):
 
         # Registry tree
         self._registry_loaded = False  # Reset so it re-loads on next visit
+        if self._registry_window is not None:
+            # The window belongs to the previous bottle: hide it and drop its
+            # tree so the next open shows the new bottle's keys.
+            self._registry_window.hide()
+            self.reg_tree.clear()
+            self.reg_value_table.setRowCount(0)
+            self.reg_source_label.setText("浏览: user.reg + system.reg")
 
     def _update_info_card(self, card: QFrame, title: str, value: str):
         """Update an info card."""
@@ -1095,6 +1193,8 @@ class BottleDetailWidget(QWidget):
         action_desktop = menu.addAction("添加到桌面")
         menu.addSeparator()
         action_uninstall = menu.addAction("卸载")
+        action_uninstall.setToolTip("运行应用自带的卸载程序")
+        action_force = menu.addAction("强制删除目录…")
         chosen = menu.exec_(self.shortcuts_list.mapToGlobal(pos))
         if chosen is action_open:
             self._run_shortcut(item)
@@ -1104,21 +1204,119 @@ class BottleDetailWidget(QWidget):
             self._shortcut_to_desktop(item)
         elif chosen is action_uninstall:
             self._uninstall_shortcut(item)
+        elif chosen is action_force:
+            self._force_remove_shortcut(item)
+
+    def refresh_programs(self):
+        """Rescan the bottle's programs, offering to drop dead shortcuts."""
+        if not self.current_bottle:
+            return
+        self._load_shortcuts()
+
+        missing = shortcuts.missing_targets(self.current_bottle.shortcuts)
+        if not missing:
+            return
+
+        names = "\n".join(
+            "· " + (entry.get("name") or Path(entry["target"]).stem)
+            for entry in missing[:10])
+        extra = (f"\n… 还有 {len(missing) - 10} 个"
+                 if len(missing) > 10 else "")
+        reply = QMessageBox.question(
+            self, "清理失效快捷方式",
+            f"发现 {len(missing)} 个快捷方式指向的程序已不存在：\n\n"
+            f"{names}{extra}\n\n是否删除这些快捷方式？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if reply != QMessageBox.Yes:
+            return
+
+        for entry in missing:
+            self.current_bottle.forget_shortcut(entry["target"])
+        self._load_shortcuts()
+
+    def add_program_shortcut(self):
+        """Pick an .exe on disk and list it under 快捷方式."""
+        if not self.current_bottle:
+            return
+        path = self._get_open_file_path(
+            "选择要添加的程序",
+            "可执行文件 (*.exe);;所有文件 (*)")
+        if not path:
+            return
+
+        target = str(Path(path))
+        name = Path(target).stem
+        icon = ""
+        try:
+            icon = shortcuts.extract_icon(
+                Path(target), self.config.cache_dir / "icons") or ""
+        except Exception:
+            icon = ""
+
+        if not self.current_bottle.add_shortcut(name, target, "exe", icon):
+            QMessageBox.information(
+                self, "已存在",
+                f"「{name}」已经在快捷方式列表里了。")
+            return
+        self._load_shortcuts()
 
     def _uninstall_shortcut(self, item):
-        """Delete a program's own folder and shortcuts, after confirmation."""
+        """Uninstall a program, preferring its own uninstaller."""
+        target = item.data(Qt.UserRole)
+        if not target or not self.current_bottle:
+            return
+        name = item.text()
+        plan = shortcuts.plan_uninstall(target, self.current_bottle.path)
+        program, args = (shortcuts.find_uninstaller(
+            plan, self.current_bottle.path) if plan else ("", []))
+        if program:
+            self._run_app_uninstaller(item, name, program, args)
+            return
+        self._force_remove_shortcut(item, name, plan)
+
+    def _run_app_uninstaller(self, item, name: str, program: str, args: list):
+        """Start the application's own uninstaller GUI."""
+        if program == "msiexec":
+            shown = "msiexec " + " ".join(args)
+        else:
+            shown = program
+        reply = QMessageBox.question(
+            self, "卸载",
+            f"将启动「{name}」自带的卸载程序：\n{shown}\n\n"
+            "请在随后弹出的窗口里完成卸载。\n"
+            "卸载完成后列表可能仍显示条目，可再用「强制删除目录」清理残留。",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if reply != QMessageBox.Yes:
+            return
+        ok = self.current_bottle.run(program, args or None)
+        if not ok:
+            QMessageBox.warning(
+                self, "无法启动卸载程序",
+                f"未能启动：\n{shown}\n\n可改用「强制删除目录」。")
+            return
+        # The uninstaller removes files asynchronously; refresh once it had a
+        # chance to create its UI, and again when the user comes back.
+        QTimer.singleShot(4000, self._load_shortcuts)
+        QMessageBox.information(
+            self, "已启动卸载程序",
+            f"「{name}」的卸载程序已启动，请在弹出的窗口里继续。")
+
+    def _force_remove_shortcut(self, item, name: str = None, plan: dict = None):
+        """Delete the program's own folder and shortcuts, after confirmation."""
         target = item.data(Qt.UserRole)
         if not target or not self.current_bottle:
             return
 
         # The list is rebuilt below, which destroys ``item`` — keep the name
-        name = item.text()
-        plan = shortcuts.plan_uninstall(target, self.current_bottle.path)
+        name = name or item.text()
+        if plan is None:
+            plan = shortcuts.plan_uninstall(target, self.current_bottle.path)
         if not plan:
             QMessageBox.information(
                 self, "无法卸载",
-                "只能卸载安装在 Program Files、ProgramData 或 "
-                "AppData\\Local\\Programs 等独立目录中的应用。\n\n"
+                "没有找到「" + name + "」自带的卸载程序，而且它不在 "
+                "Program Files、ProgramData 或 AppData\\Local\\Programs "
+                "等独立目录中。\n\n"
                 "系统自带程序（notepad、winecfg 等）请通过容器或组件管理。")
             return
 
@@ -1141,6 +1339,9 @@ class BottleDetailWidget(QWidget):
             return
 
         ok, error = shortcuts.remove_app(plan)
+        # The app's sibling entries (updater, uninstaller, translator…) die
+        # with the folder too — leaving them behind yields "程序文件不存在".
+        self.current_bottle.forget_shortcuts_under(plan["root"])
         self.current_bottle.forget_shortcut(target)
         self._load_shortcuts()
         if ok:
@@ -1196,7 +1397,13 @@ class BottleDetailWidget(QWidget):
         if not target or not self.current_bottle:
             return
         if not Path(target).exists():
-            QMessageBox.warning(self, "无法运行", f"程序文件不存在：\n{target}")
+            reply = QMessageBox.question(
+                self, "程序不存在",
+                f"程序文件不存在：\n{target}\n\n是否删除这个快捷方式？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if reply == QMessageBox.Yes:
+                self.current_bottle.forget_shortcut(target)
+                self._load_shortcuts()
             return
         self.current_bottle.run(target)
 
@@ -1457,35 +1664,51 @@ class BottleDetailWidget(QWidget):
                     )
             self.comp_status_label.show()
 
-            # Disable the install button while running to prevent re-entry
-            for btn in self.findChildren(QPushButton):
-                if "安装" in btn.text():
-                    btn.setEnabled(False)
-                    self._install_btn = btn
-                    break
+            # Disable the action buttons while running and expose "取消"
+            self._cancel_event = threading.Event()
+            self.btn_install.setEnabled(False)
+            self.btn_uninstall.setEnabled(False)
+            self.btn_refresh_comp.setEnabled(False)
+            self.btn_cancel_comp.setEnabled(True)
+            self.btn_cancel_comp.setVisible(True)
 
             class InstallCompThread(QThread):
                 progress = pyqtSignal(int, int, str)
-                finished_sig = pyqtSignal(bool, str, str)  # ok, name, error_log
+                # ok, name, error_log, overrides, files placed by the installer
+                finished_sig = pyqtSignal(bool, str, str, dict, list)
 
-                def __init__(self, cm, name, bottle_path):
+                def __init__(self, cm, name, bottle_path, cancel_event):
                     super().__init__()
                     self._cm = cm
                     self._name = name
                     self._bottle_path = bottle_path
+                    self._cancel_event = cancel_event
 
                 def run(self):
                     def on_progress(v, t, m=None):
                         self.progress.emit(v, t, m or "")
-                    ok, error_log = self._cm.install(
-                        self._name, self._bottle_path, on_progress)
-                    self.finished_sig.emit(ok, self._name, error_log)
+                    ok, error_log, overrides, files = self._cm.install(
+                        self._name, self._bottle_path, on_progress,
+                        cancel_event=self._cancel_event)
+                    self.finished_sig.emit(ok, self._name, error_log,
+                                           overrides or {}, files or [])
 
             self._install_thread = InstallCompThread(
-                self.component_manager, name, bottle_path)
+                self.component_manager, name, bottle_path, self._cancel_event)
             self._install_thread.progress.connect(self._on_install_progress)
             self._install_thread.finished_sig.connect(self._on_install_done)
             self._install_thread.start()
+
+    def cancel_component_install(self):
+        """Ask the running install to stop (download / winetricks / extract)."""
+        event = getattr(self, "_cancel_event", None)
+        if not event or event.is_set():
+            return
+        event.set()
+        self.btn_cancel_comp.setEnabled(False)
+        if hasattr(self, "comp_status_label") and self.comp_status_label:
+            self.comp_status_label.setText("正在取消...")
+        QApplication.processEvents()
 
     def _on_install_progress(self, v, t, m=""):
         """Handle install progress updates from the background thread."""
@@ -1494,14 +1717,32 @@ class BottleDetailWidget(QWidget):
             self.comp_status_label.setText(m)
         QApplication.processEvents()
 
-    def _on_install_done(self, ok: bool, name: str, error_log: str):
+    def _on_install_done(self, ok: bool, name: str, error_log: str,
+                         overrides: dict = None, files: list = None):
         """Handle install completion from the background thread."""
+        cancelled = bool(getattr(self, "_cancel_event", None)
+                         and self._cancel_event.is_set())
         if ok:
             self.current_bottle.add_component(name)
+            # Mirror what the installer actually put in the prefix, so the
+            # DLL overrides tab matches reality and uninstall can revert it.
+            for dll, mode in (overrides or {}).items():
+                self.current_bottle.set_dll_override(dll, mode)
+            self.current_bottle.set_component_record(
+                name, files or [], overrides or {})
             self.refresh_components()
+            if overrides:
+                self._load_dll_overrides()
             self.comp_progress.setValue(100)
             QMessageBox.information(self, "安装完成",
                                     f"组件 '{name}' 安装成功。")
+        elif cancelled:
+            # User pressed "取消": not an error, nothing was recorded.
+            self.comp_progress.setValue(0)
+            QMessageBox.information(self, "已取消",
+                                    f"已取消安装组件 '{name}'。\n"
+                                    f"未完成的下载文件已删除，容器未做任何改动。")
+            self.refresh_components()
         else:
             log_text = error_log if error_log else "（无详细输出）"
             msg_box = QMessageBox(self)
@@ -1510,13 +1751,28 @@ class BottleDetailWidget(QWidget):
             msg_box.setText(f"组件 '{name}' 安装失败。")
             msg_box.setDetailedText(log_text)
             msg_box.exec_()
+        self._reset_components_busy()
+
+    def _reset_components_busy(self):
+        """Restore the component tab buttons after an install/uninstall."""
         self.comp_progress.setVisible(False)
-        if hasattr(self, "_install_btn") and self._install_btn:
-            self._install_btn.setEnabled(True)
-            self._install_btn = None
+        self.btn_install.setEnabled(True)
+        self.btn_uninstall.setEnabled(True)
+        self.btn_refresh_comp.setEnabled(True)
+        self.btn_cancel_comp.setEnabled(True)
+        self.btn_cancel_comp.setVisible(False)
+        if getattr(self, "_cancel_event", None):
+            self._cancel_event.clear()
 
     def uninstall_component(self):
-        """Uninstall the selected component from the bottle."""
+        """Uninstall the selected component from the bottle.
+
+        Components that recorded what they put in the prefix get their DLLs
+        reverted (backup restored, otherwise removed) and their overrides
+        dropped, in a worker thread — registry work spawns wine. Components
+        installed by winetricks or an MSI have no file record, so only the
+        record is removed and the dialog says so.
+        """
         row = self.comp_table.currentRow()
         if row < 0 or not self.current_bottle:
             QMessageBox.information(self, "提示", "请先选择一个已安装的组件。")
@@ -1531,14 +1787,108 @@ class BottleDetailWidget(QWidget):
             QMessageBox.information(self, "提示", f"组件 '{name}' 尚未安装，无需卸载。")
             return
 
+        record = self.current_bottle.get_component_record(name)
+        files = record.get("files", [])
+        overrides = record.get("overrides", {})
+
+        if files or overrides:
+            detail = (f"将还原 {len(files)} 个 DLL 文件"
+                      f"（有备份的恢复原文件，否则删除）"
+                      f"并移除 {len(overrides)} 条 DLL 覆盖。")
+        else:
+            detail = ("该组件由 winetricks / 微软安装包安装，没有可回滚的文件记录：\n"
+                      "卸载只移除记录和覆盖，容器内已装的文件需自行处理。")
+
         reply = QMessageBox.warning(
             self, "确认卸载",
-            f"确定要从容器中移除组件 '{name}' 吗？",
+            f"确定要从容器中卸载组件 '{name}' 吗？\n\n{detail}",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
         if reply != QMessageBox.Yes:
             return
 
-        self.current_bottle.remove_component(name)
-        self.refresh_components()
-        QMessageBox.information(self, "卸载完成", f"组件 '{name}' 已从记录中移除。")
+        if not (files or overrides):
+            self.current_bottle.remove_component(name)
+            self.current_bottle.drop_component_record(name)
+            self.refresh_components()
+            QMessageBox.information(self, "卸载完成",
+                                    f"组件 '{name}' 已从记录中移除。")
+            return
+
+        self.comp_progress.setVisible(True)
+        self.comp_progress.setValue(0)
+        self.comp_status_label = QLabel("准备卸载...")
+        self.comp_status_label.setObjectName("muted")
+        parent_widget = self.comp_progress.parentWidget()
+        if parent_widget:
+            parent_layout = parent_widget.layout()
+            if parent_layout:
+                parent_layout.insertWidget(
+                    parent_layout.indexOf(self.comp_progress),
+                    self.comp_status_label
+                )
+        self.comp_status_label.show()
+        self.btn_install.setEnabled(False)
+        self.btn_uninstall.setEnabled(False)
+
+        keep = self.current_bottle.component_overrides(exclude=name)
+        bottle_path = str(self.current_bottle.path)
+        manager = self.component_manager
+
+        class UninstallCompThread(QThread):
+            progress = pyqtSignal(int, int, str)
+            finished_sig = pyqtSignal(bool, str, str, dict)
+
+            def __init__(self, name, bottle_path, files, overrides, keep):
+                super().__init__()
+                self._name = name
+                self._bottle_path = bottle_path
+                self._files = files
+                self._overrides = overrides
+                self._keep = keep
+
+            def run(self):
+                def on_progress(v, t, m=None):
+                    self.progress.emit(v, t, m or "")
+                ok, error_log = manager.uninstall(
+                    self._name, self._bottle_path, self._files,
+                    self._overrides, keep_overrides=self._keep,
+                    progress_callback=on_progress)
+                # Report the override names too, so the handler can drop them
+                # from the bottle metadata.
+                self.finished_sig.emit(ok, self._name, error_log or "",
+                                       self._overrides)
+
+        self._uninstall_thread = UninstallCompThread(
+            name, bottle_path, files, overrides, keep)
+        self._uninstall_thread.progress.connect(self._on_install_progress)
+        self._uninstall_thread.finished_sig.connect(self._on_uninstall_done)
+        self._uninstall_thread.start()
+
+    def _on_uninstall_done(self, ok: bool, name: str, error_log: str,
+                           overrides: dict = None):
+        """Handle uninstall completion from the background thread."""
+        if ok:
+            still_needed = {
+                dll.lower()
+                for dll in self.current_bottle.component_overrides(exclude=name)
+            }
+            for dll in (overrides or {}):
+                if dll.lower() not in still_needed:
+                    self.current_bottle.remove_dll_override(dll)
+            self.current_bottle.remove_component(name)
+            self.current_bottle.drop_component_record(name)
+            self.refresh_components()
+            self._load_dll_overrides()
+            self.comp_progress.setValue(100)
+            QMessageBox.information(self, "卸载完成",
+                                    f"组件 '{name}' 已卸载，相关 DLL 与覆盖已还原。")
+        else:
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setWindowTitle("卸载失败")
+            msg_box.setText(f"组件 '{name}' 卸载未完全成功。")
+            msg_box.setDetailedText(error_log or "（无详细输出）")
+            msg_box.exec_()
+
+        self._reset_components_busy()

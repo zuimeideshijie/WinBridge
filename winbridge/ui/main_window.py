@@ -1,6 +1,7 @@
 """WinBridge main window."""
 
 import os
+import threading
 from pathlib import Path
 from PyQt5.QtCore import Qt, QSize, QTimer
 from PyQt5.QtGui import QIcon, QFont, QPixmap
@@ -213,6 +214,12 @@ class MainWindow(QMainWindow):
         self.progress_bar.setFixedWidth(180)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setVisible(False)
+        self.cancel_base_btn = QPushButton("取消")
+        self.cancel_base_btn.setObjectName("btnDefault")
+        self.cancel_base_btn.setToolTip("取消正在下载的基础组件")
+        self.cancel_base_btn.setVisible(False)
+        self.cancel_base_btn.clicked.connect(self.cancel_base_download)
+        self.status_bar.addPermanentWidget(self.cancel_base_btn)
         self.status_bar.addPermanentWidget(self.progress_bar)
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("就绪")
@@ -530,20 +537,27 @@ class MainWindow(QMainWindow):
 
         class InstallThread(QThread):
             progress = pyqtSignal(int, int)
-            finished = pyqtSignal(bool)
+            # ok, cancelled
+            finished = pyqtSignal(bool, bool)
             status = pyqtSignal(str)
 
-            def __init__(self, component_manager, bottle_path, components, bottle):
+            def __init__(self, component_manager, bottle_path, components, bottle,
+                         cancel_event):
                 super().__init__()
                 self.component_manager = component_manager
                 self.bottle_path = bottle_path
                 self.components = components
                 self.bottle = bottle
+                self.cancel_event = cancel_event
                 self.failed_components = []
+                self.cancelled = False
 
             def run(self):
                 total = len(self.components)
                 for i, (name, info) in enumerate(self.components):
+                    if self.cancel_event.is_set():
+                        self.cancelled = True
+                        break
                     self.status.emit(f"正在安装 {info['label']}...")
                     self.progress.emit(int(i * 100 / total), 100)
 
@@ -552,32 +566,58 @@ class MainWindow(QMainWindow):
                         if m:
                             self.status.emit(m)
 
-                    ok, error_log = self.component_manager.install(
-                        name, self.bottle_path, on_progress)
+                    ok, error_log, overrides, files = self.component_manager.install(
+                        name, self.bottle_path, on_progress,
+                        cancel_event=self.cancel_event)
                     if ok:
                         self.status.emit(f"{info['label']} 安装完成")
                         if self.bottle:
                             self.bottle.add_component(name)
+                            for dll, mode in (overrides or {}).items():
+                                self.bottle.set_dll_override(dll, mode)
+                            self.bottle.set_component_record(
+                                name, files or [], overrides or {})
+                    elif self.cancel_event.is_set():
+                        self.cancelled = True
+                        break
                     else:
                         self.status.emit(f"{info['label']} 安装失败: {error_log[:100] if error_log else '无详细输出'}")
                         self.failed_components.append(name)
-                self.progress.emit(100, 100)
-                self.finished.emit(len(self.failed_components) == 0)
+                if not self.cancelled:
+                    self.progress.emit(100, 100)
+                self.finished.emit(len(self.failed_components) == 0, self.cancelled)
 
         bottle_path = str(bottle.path)
+        self._base_cancel_event = threading.Event()
         self.thread = InstallThread(
-            self.component_manager, bottle_path, to_install, bottle)
+            self.component_manager, bottle_path, to_install, bottle,
+            self._base_cancel_event)
         self.thread.progress.connect(self.progress_bar.setValue)
         self.thread.finished.connect(
-            lambda ok: self.on_download_finished(ok))
+            lambda ok, cancelled: self.on_download_finished(ok, cancelled))
         self.thread.status.connect(self.status_bar.showMessage)
         self.progress_bar.setVisible(True)
+        self.cancel_base_btn.setEnabled(True)
+        self.cancel_base_btn.setVisible(True)
         self.thread.start()
 
-    def on_download_finished(self, success: bool):
+    def cancel_base_download(self):
+        """Ask the bulk component install to stop."""
+        event = getattr(self, "_base_cancel_event", None)
+        if not event or event.is_set():
+            return
+        event.set()
+        self.cancel_base_btn.setEnabled(False)
+        self.status_bar.showMessage("正在取消...")
+
+    def on_download_finished(self, success: bool, cancelled: bool = False):
         """Handle download completion."""
         self.progress_bar.setVisible(False)
-        if success:
+        self.cancel_base_btn.setVisible(False)
+        self.cancel_base_btn.setEnabled(True)
+        if cancelled:
+            self.status_bar.showMessage("已取消下载")
+        elif success:
             self.status_bar.showMessage("基础文件下载完成")
         else:
             QMessageBox.warning(self, "下载提示",
@@ -608,7 +648,7 @@ class MainWindow(QMainWindow):
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
-        version = QLabel("版本 1.2.1 · Wine 容器管理器")
+        version = QLabel("版本 1.2.2 · Wine 容器管理器")
         version.setObjectName("muted")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)

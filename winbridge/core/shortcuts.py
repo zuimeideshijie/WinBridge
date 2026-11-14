@@ -430,6 +430,17 @@ def discover(bottle_path) -> list:
     return found
 
 
+def missing_targets(entries: list) -> list:
+    """Stored shortcuts whose program file no longer exists.
+
+    ``discover()`` only reports files that exist, so these can only come from
+    bottle.json — i.e. the program was deleted after being listed. They are
+    what the 刷新 button offers to clean up.
+    """
+    return [entry for entry in (entries or [])
+            if entry.get("target") and not Path(entry["target"]).exists()]
+
+
 def merge(stored: list, discovered: list) -> tuple:
     """Merge stored shortcuts with a fresh discovery pass.
 
@@ -499,6 +510,137 @@ def _dir_size(path: Path) -> int:
         except OSError:
             continue
     return total
+
+
+# Inno Setup (unins000.exe), NSIS (uninstall.exe), WiX and friends
+UNINSTALLER_NAMES = (
+    "unins000.exe", "unins001.exe", "unins002.exe",
+    "uninstall.exe", "uninst.exe", "uninstal.exe",
+    "uninstall64.exe", "uninst64.exe",
+)
+
+
+def _is_pe(path: Path) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(2) == b"MZ"
+    except OSError:
+        return False
+
+
+def _windows_to_host(path: str, bottle_path) -> Path:
+    """Map a ``C:\\...`` path from the bottle registry to a host path."""
+    cleaned = (path or "").strip().strip('"')
+    match = re.match(r"^([A-Za-z]):[\\/](.*)$", cleaned)
+    if not match:
+        return Path(cleaned)
+    drive, rest = match.group(1).lower(), match.group(2).replace("\\", "/")
+    if drive == "c":
+        return Path(bottle_path) / "drive_c" / rest
+    return Path("/") / rest
+
+
+def _registry_uninstall_entries(bottle_path) -> list:
+    """Uninstall records from the bottle's registry files."""
+    entries = []
+    for reg_file in ("system.reg", "user.reg"):
+        try:
+            text = (Path(bottle_path) / reg_file).read_text(
+                encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for block in text.split("\n\n"):
+            header = block.split("\n", 1)[0]
+            if "CurrentVersion\\\\Uninstall\\\\" not in header:
+                continue
+            values = dict(re.findall(
+                r'^"([^"]+)"="((?:[^"\\]|\\.)*)"', block, re.M))
+            if values:
+                entries.append({
+                    key: value.replace("\\\\", "\\")
+                    for key, value in values.items()
+                })
+    return entries
+
+
+def find_uninstaller(plan: dict, bottle_path: str) -> tuple:
+    """Locate the application's own uninstaller.
+
+    Returns ``(program, args)``; ``("", [])`` when the app ships none. The
+    app folder is searched first (Inno/NSIS style installers), then the
+    registry's Uninstall entries are matched by InstallLocation — that is how
+    MSI-based apps are found, where the "uninstaller" is ``msiexec /X{GUID}``.
+
+    Only files inside the app's own folder are accepted, so "卸载" can never
+    start a system uninstaller.
+    """
+    if not plan:
+        return "", []
+    root = Path(plan["root"])
+    if not root.is_dir():
+        return "", []
+    target = Path(plan.get("target") or "")
+
+    for name in UNINSTALLER_NAMES:
+        candidate = root / name
+        if candidate.is_file() and _is_pe(candidate):
+            return str(candidate), []
+
+    # Variants with a different name/casing (e.g. "Uninstall App.exe")
+    try:
+        loose = [
+            path for path in root.iterdir()
+            if path.is_file() and path.suffix.lower() == ".exe"
+            and path != target and path.name.lower() != target.name.lower()
+            and "uninst" in path.name.lower()
+        ]
+    except OSError:
+        loose = []
+    loose.sort(key=lambda p: (len(p.name), p.name.lower()))
+    for candidate in loose:
+        if _is_pe(candidate):
+            return str(candidate), []
+
+    for entry in _registry_uninstall_entries(bottle_path):
+        raw = entry.get("UninstallString") or ""
+        if not raw:
+            continue
+        quoted = re.match(r'^"([^"]+)"\s*(.*)$', raw)
+        if quoted:
+            program, rest = quoted.group(1), quoted.group(2)
+        else:
+            # Unquoted strings can still contain spaces ("C:\Program Files\..."),
+            # so split at the .exe boundary instead of the first space.
+            exe_match = re.match(r"(?i)^(.*?\.exe)\s*(.*)$", raw)
+            if exe_match:
+                program, rest = exe_match.group(1), exe_match.group(2)
+            else:
+                parts = raw.split(None, 1)
+                program = parts[0] if parts else ""
+                rest = parts[1] if len(parts) > 1 else ""
+
+        location = entry.get("InstallLocation") or entry.get("DisplayIcon") or ""
+        host_program = _windows_to_host(program, bottle_path)
+        host_location = _windows_to_host(location.split(",")[0], bottle_path) \
+            if location else None
+        inside = False
+        for candidate in (host_program, host_location):
+            try:
+                if candidate and Path(candidate).resolve().is_relative_to(
+                        root.resolve()):
+                    inside = True
+                    break
+            except (OSError, ValueError):
+                continue
+        if not inside:
+            continue
+
+        args = [token.strip('"') for token in rest.split()] if rest else []
+        if host_program.name.lower() in ("msiexec.exe", "msiexec"):
+            return "msiexec", args or []
+        if host_program.exists() and _is_pe(host_program):
+            return str(host_program), args
+    return "", []
 
 
 def plan_uninstall(target, bottle_path) -> dict:

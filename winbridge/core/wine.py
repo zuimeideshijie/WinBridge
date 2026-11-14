@@ -55,7 +55,8 @@ class Wine:
             try:
                 result = subprocess.run(
                     [self.wine_path, "--version"],
-                    capture_output=True, text=True, timeout=10
+                    capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=10
                 )
                 self._version = result.stdout.strip() or "unknown"
             except Exception:
@@ -91,7 +92,8 @@ class Wine:
         if wait:
             return subprocess.run(
                 cmd, env=environment, cwd=workdir,
-                capture_output=True, text=True, timeout=300
+                capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=300
             )
         # Nobody reads the pipes of a detached program, so a chatty one (Wine
         # logs every fixme) would block once the 64 KB buffer fills.
@@ -112,7 +114,8 @@ class Wine:
         cmd = f"{shlex.quote(self.wine_path)} {wine_cmd}"
         return subprocess.run(
             cmd, env=environment, shell=True,
-            capture_output=True, text=True, timeout=timeout
+            capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=timeout
         )
 
     def boot(self, bottle_path: str, wait: bool = True) -> subprocess.CompletedProcess:
@@ -181,7 +184,8 @@ class Wine:
         pids = []
         try:
             result = subprocess.run(
-                ["ps", "-eo", "pid,args"], capture_output=True, text=True, timeout=10)
+                ["ps", "-eo", "pid,args"], capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=10)
             for line in result.stdout.splitlines()[1:]:
                 parts = line.split(None, 1)
                 if len(parts) < 2:
@@ -251,6 +255,7 @@ class Wine:
                 [self.wine_path, "wineboot", "-u"],
                 env=environment,
                 capture_output=True, text=True,
+                    encoding="utf-8", errors="replace",
                 timeout=120
             )
             # Let the wineserver flush system.reg before inject_fonts() edits
@@ -445,7 +450,8 @@ class Wine:
                  "/t", "REG_SZ",
                  "/d", file_name,
                  "/f"],
-                env=env, capture_output=True, text=True, timeout=30
+                env=env, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=30
             )
             return result.returncode == 0
         except Exception:
@@ -471,7 +477,8 @@ class Wine:
 
             result = subprocess.run(
                 ["ps", "aux", "--sort=-%cpu"],
-                capture_output=True, text=True, timeout=10
+                capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=10
             )
             processes = []
             for line in result.stdout.split("\n")[1:]:

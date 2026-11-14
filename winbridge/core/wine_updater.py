@@ -71,7 +71,7 @@ class WineUpdater(QObject):
             import json
             req = urllib.request.Request(
                 self.GITCODE_API,
-                headers={"User-Agent": "WinBridge/1.2.1"}
+                headers={"User-Agent": "WinBridge/1.2.2"}
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode())
