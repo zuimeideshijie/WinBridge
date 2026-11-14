@@ -374,6 +374,8 @@ A: 性能取决于游戏本身和 Wine 对它的支持程度。建议使用 Prot
 
 - **WinBridge Gitee 仓库**：[https://gitee.com/zuimeideshijie/WinBidge.git](https://gitee.com/zuimeideshijie/WinBidge.git)
 
+- **WinBridge Github 仓库**：[https://github.com/zuimeideshijie/WinBridge.git](https://github.com/zuimeideshijie/WinBridge.git)
+
 - **Wine 官方文档**：[https://wiki.winehq.org/](https://wiki.winehq.org/)
 - **Wine 应用数据库**：[https://appdb.winehq.org/](https://appdb.winehq.org/)
 - **ProtonDB**：[https://www.protondb.com/](https://www.protondb.com/)
@@ -390,4 +392,4 @@ A: 性能取决于游戏本身和 Wine 对它的支持程度。建议使用 Prot
 
 **WinBridge** — 连接 Windows 与 Linux 的桥梁
 
-*本文档最后更新于 2026 年 8月*
+*本文档最后更新于 2026 年 11月*
