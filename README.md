@@ -26,7 +26,7 @@
 
 ### 1.1 WinBridge 是什么？
 
-**WinBridge** 是一款为 Linux 桌面系统设计的开源应用程序，它由atomcode为wine开发的ui，它允许用户在 Linux 环境下方便地创建、管理和运行 Windows 应用程序。它通过 **Wine** 技术在 Linux 上模拟 Windows 运行环境，让您能够像在 Windows 电脑上一样运行 Windows 应用。
+**WinBridge** 是一款为 Linux 桌面系统设计的开源应用程序，它由atomcode和qwen code为wine开发的ui，它允许用户在 Linux 环境下方便地创建、管理和运行 Windows 应用程序。它通过 **Wine** 技术在 Linux 上模拟 Windows 运行环境，让您能够像在 Windows 电脑上一样运行 Windows 应用。
 
 ### 1.2 为什么需要 WinBridge？
 
