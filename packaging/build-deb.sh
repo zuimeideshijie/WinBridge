@@ -14,12 +14,17 @@ OUT="$ROOT/debian"
 echo "==> 打包 $NAME $VERSION"
 rm -rf "$BUILD"
 mkdir -p "$PKG/DEBIAN" "$PKG/usr/bin" "$PKG/usr/lib/$NAME" \
+         "$PKG/usr/lib/$NAME/packaging" \
          "$PKG/usr/share/applications" \
          "$PKG/usr/share/icons/hicolor/256x256/apps" \
          "$PKG/usr/share/doc/$NAME"
 
 # --- payload -------------------------------------------------------------
 cp "$ROOT/main.py" "$PKG/usr/lib/$NAME/"
+# The flatpak sandbox runtime builder ships with the app: the GUI points at
+# `winbridge-sandbox-runtime`, so an installed package must carry it.
+cp "$ROOT/packaging/build-sandbox-runtime.sh" "$PKG/usr/lib/$NAME/packaging/"
+chmod 0755 "$PKG/usr/lib/$NAME/packaging/build-sandbox-runtime.sh"
 mkdir -p "$PKG/usr/lib/$NAME/winbridge"
 cp "$ROOT/winbridge/__init__.py" "$PKG/usr/lib/$NAME/winbridge/"
 cp -r "$ROOT/winbridge/core" "$ROOT/winbridge/ui" "$ROOT/winbridge/resources" \
@@ -40,6 +45,13 @@ cat > "$PKG/usr/bin/$NAME" <<'LAUNCHER'
 exec python3 /usr/lib/winbridge/main.py "$@"
 LAUNCHER
 chmod 0755 "$PKG/usr/bin/$NAME"
+
+# Same entry point for the sandbox runtime builder, whatever the install path.
+cat > "$PKG/usr/bin/$NAME-sandbox-runtime" <<'LAUNCHER'
+#!/bin/sh
+exec bash /usr/lib/winbridge/packaging/build-sandbox-runtime.sh "$@"
+LAUNCHER
+chmod 0755 "$PKG/usr/bin/$NAME-sandbox-runtime"
 
 cat > "$PKG/usr/share/applications/$NAME.desktop" <<'DESKTOP'
 [Desktop Entry]

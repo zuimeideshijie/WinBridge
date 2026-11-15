@@ -1062,7 +1062,7 @@ class BottleDetailWidget(QWidget):
         if mode == "flatpak" and not app_installed():
             QMessageBox.warning(self, "运行环境",
                                 "未安装 WinBridge 沙箱运行时。\n"
-                                "请先执行 packaging/build-sandbox-runtime.sh")
+                                "请先执行 winbridge-sandbox-runtime")
             self._sync_runtime_combo()
             return
         # A running sandboxed wineserver would survive the switch.

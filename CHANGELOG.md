@@ -1,5 +1,14 @@
 # 更新日志
 
+## [1.2.4] - 2026-11-15
+
+### 打包
+
+- **deb 现在随包携带沙箱运行时的构建脚本**：新增 `/usr/bin/winbridge-sandbox-runtime`
+  入口（等价于源码目录的 `packaging/build-sandbox-runtime.sh`）。1.2.3 只装了
+  `winbridge/`，「未安装沙箱运行时」的提示指向的文件在安装版里并不存在
+- 新建容器对话框与容器详情的提示、README 统一改为 `winbridge-sandbox-runtime`
+
 ## [1.2.3] - 2026-11-15
 
 ### 容器

@@ -147,11 +147,12 @@ sudo dpkg -i /安装路径/安装包名
 来自运行时**，前缀目录、Wine 二进制、安装的程序都还在宿主原来的位置——换的只是驱动栈。
 
 - 适合宿主驱动/图形库跑不起来的老游戏（例如 D3D8 时代的作品），不必升级或降级系统 Mesa。
-- 需要先安装沙箱运行时：
+- 需要先安装沙箱运行时（deb 安装版可直接用 `winbridge-sandbox-runtime`）：
 
   ```bash
-  bash packaging/build-sandbox-runtime.sh              # 构建并安装（用户级）
-  bash packaging/build-sandbox-runtime.sh --uninstall  # 卸载
+  winbridge-sandbox-runtime              # 构建并安装（用户级，不需要 sudo）
+  winbridge-sandbox-runtime --uninstall  # 卸载
+  # 源码运行时等价于 bash packaging/build-sandbox-runtime.sh
   ```
 
   它只是一个仅含 `bash` 的 flatpak 应用（`io.github.zuimeideshijie.WinBridgeRuntime`），

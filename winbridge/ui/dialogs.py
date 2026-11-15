@@ -172,7 +172,8 @@ class CreateBottleDialog(QDialog):
         else:
             self.runtime_sandbox.setEnabled(False)
             self.runtime_hint.setText(
-                "未安装沙箱运行时，先执行 packaging/build-sandbox-runtime.sh")
+                "未安装沙箱运行时，先执行 winbridge-sandbox-runtime"
+                "（源码目录下为 packaging/build-sandbox-runtime.sh）")
 
         # Description
         desc_label = QLabel("描述 (可选)")
