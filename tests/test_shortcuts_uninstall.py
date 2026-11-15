@@ -202,5 +202,62 @@ class ForgetUnderTests(unittest.TestCase):
         self.assertEqual(len(self.bottle.shortcuts), 1)
 
 
+class DeleteShortcutTests(unittest.TestCase):
+    """「删除选中的快捷方式」只移除记录，且不会被扫描重新发现。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "bottle"
+        self.path.mkdir()
+        self.addCleanup(self.tmp.cleanup)
+        self.bottle = make_bottle(self.path)
+        self.exe = make_app(self.path)
+        self.bottle.add_shortcut("MyApp", str(self.exe))
+
+    def discovered(self):
+        """What a fresh discovery pass would report for this program."""
+        return [{"name": "MyApp", "target": str(self.exe), "source": "exe"}]
+
+    def test_removed_entry_stays_out_of_discovery(self):
+        self.assertTrue(self.bottle.forget_shortcut(str(self.exe)))
+        self.assertTrue(self.bottle.hide_shortcut(str(self.exe)))
+
+        merged, _ = shortcuts.merge(self.bottle.shortcuts,
+                                    self.discovered(),
+                                    self.bottle.hidden_shortcuts)
+        self.assertEqual(merged, [])
+
+    def test_without_the_hidden_flag_discovery_restores_it(self):
+        # Guards the actual bug: forget_shortcut alone is not enough, because
+        # the list reloads through merge() right afterwards.
+        self.bottle.forget_shortcut(str(self.exe))
+        merged, _ = shortcuts.merge(self.bottle.shortcuts,
+                                    self.discovered(), [])
+        self.assertEqual([s["target"] for s in merged], [str(self.exe)])
+
+    def test_hidden_list_survives_a_reload_from_disk(self):
+        self.bottle.forget_shortcut(str(self.exe))
+        self.bottle.hide_shortcut(str(self.exe))
+
+        reloaded = make_bottle(self.path)
+        self.assertEqual(reloaded.hidden_shortcuts, [str(self.exe)])
+
+    def test_adding_the_program_again_clears_the_flag(self):
+        self.bottle.forget_shortcut(str(self.exe))
+        self.bottle.hide_shortcut(str(self.exe))
+
+        self.assertTrue(self.bottle.add_shortcut("MyApp", str(self.exe)))
+        self.assertEqual(self.bottle.hidden_shortcuts, [])
+        merged, _ = shortcuts.merge(self.bottle.shortcuts,
+                                    self.discovered(),
+                                    self.bottle.hidden_shortcuts)
+        self.assertEqual([s["target"] for s in merged], [str(self.exe)])
+
+    def test_hiding_is_idempotent(self):
+        self.assertTrue(self.bottle.hide_shortcut(str(self.exe)))
+        self.assertFalse(self.bottle.hide_shortcut(str(self.exe)))
+        self.assertEqual(self.bottle.hidden_shortcuts, [str(self.exe)])
+
+
 if __name__ == "__main__":
     unittest.main()

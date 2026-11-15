@@ -186,6 +186,34 @@ class Bottle:
         self.shortcuts = items
         return True
 
+    @property
+    def hidden_shortcuts(self) -> List[str]:
+        """Targets the user removed by hand.
+
+        Discovery rescans the container every time the list is (re)loaded, so
+        without this a removed entry would come straight back.
+        """
+        return list(self._meta.get("hidden_shortcuts", []))
+
+    def hide_shortcut(self, target: str) -> bool:
+        """Keep a removed shortcut out of future discovery passes."""
+        hidden = self.hidden_shortcuts
+        if not target or target in hidden:
+            return False
+        hidden.append(target)
+        self._meta["hidden_shortcuts"] = hidden
+        self._save_meta()
+        return True
+
+    def unhide_shortcut(self, target: str) -> bool:
+        """Allow a previously removed shortcut to be discovered again."""
+        hidden = self.hidden_shortcuts
+        if target not in hidden:
+            return False
+        self._meta["hidden_shortcuts"] = [t for t in hidden if t != target]
+        self._save_meta()
+        return True
+
     def forget_shortcuts_under(self, root) -> int:
         """Drop every shortcut whose program lives inside `root`.
 
@@ -223,6 +251,8 @@ class Bottle:
         items = self.shortcuts
         if any(item.get("target") == target for item in items):
             return False
+        # An explicit add overrides an earlier "delete shortcut".
+        self.unhide_shortcut(target)
         items.append({"name": name, "target": target,
                       "source": source, "icon": icon})
         self.shortcuts = items

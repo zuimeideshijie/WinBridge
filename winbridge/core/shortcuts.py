@@ -441,17 +441,19 @@ def missing_targets(entries: list) -> list:
             if entry.get("target") and not Path(entry["target"]).exists()]
 
 
-def merge(stored: list, discovered: list) -> tuple:
+def merge(stored: list, discovered: list, hidden: list = None) -> tuple:
     """Merge stored shortcuts with a fresh discovery pass.
 
     Stored entries win (they keep user renames and survive deleted .lnk
-    files); newly discovered targets are appended. Returns
+    files); newly discovered targets are appended. `hidden` lists targets the
+    user deleted by hand — discovery must not resurrect them. Returns
     (merged_list, changed).
     """
+    hidden_targets = {h for h in (hidden or []) if h}
     merged = [dict(s) for s in (stored or [])]
     known = {s.get("target") for s in merged}
     for item in discovered:
-        if item["target"] in known:
+        if item["target"] in known or item["target"] in hidden_targets:
             continue
         merged.append(dict(item))
         known.add(item["target"])

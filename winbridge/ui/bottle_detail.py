@@ -401,7 +401,8 @@ class BottleDetailWidget(QWidget):
         self.shortcuts_list.itemDoubleClicked.connect(self._run_shortcut)
         shortcuts_layout.addWidget(self.shortcuts_list)
 
-        shortcuts_hint = QLabel("双击运行 · 右键可打开、重命名、添加到桌面或卸载")
+        shortcuts_hint = QLabel(
+            "双击运行 · 右键可打开、重命名、添加到桌面、删除或卸载")
         shortcuts_hint.setObjectName("hint")
 
         footer = QHBoxLayout()
@@ -1168,7 +1169,9 @@ class BottleDetailWidget(QWidget):
             return
 
         discovered = shortcuts.discover(self.current_bottle.path)
-        merged, changed = shortcuts.merge(self.current_bottle.shortcuts, discovered)
+        merged, changed = shortcuts.merge(self.current_bottle.shortcuts,
+                                          discovered,
+                                          self.current_bottle.hidden_shortcuts)
         if changed:
             self.current_bottle.shortcuts = merged
 
@@ -1226,7 +1229,7 @@ class BottleDetailWidget(QWidget):
         self.current_bottle.shortcuts = entries
 
     def _shortcut_menu(self, pos):
-        """Right-click menu: open, rename, add to desktop, uninstall."""
+        """Right-click menu: open, rename, add to desktop, remove, uninstall."""
         item = self.shortcuts_list.itemAt(pos)
         target = item.data(Qt.UserRole) if item else None
         if not target:
@@ -1236,6 +1239,8 @@ class BottleDetailWidget(QWidget):
         action_rename = menu.addAction("重命名")
         action_desktop = menu.addAction("添加到桌面")
         menu.addSeparator()
+        action_remove = menu.addAction("删除选中的快捷方式")
+        action_remove.setToolTip("只从列表移除，不删除程序文件")
         action_uninstall = menu.addAction("卸载")
         action_uninstall.setToolTip("运行应用自带的卸载程序")
         action_force = menu.addAction("强制删除目录…")
@@ -1246,10 +1251,31 @@ class BottleDetailWidget(QWidget):
             self._rename_shortcut(item)
         elif chosen is action_desktop:
             self._shortcut_to_desktop(item)
+        elif chosen is action_remove:
+            self._remove_shortcut_entry(item)
         elif chosen is action_uninstall:
             self._uninstall_shortcut(item)
         elif chosen is action_force:
             self._force_remove_shortcut(item)
+
+    def _remove_shortcut_entry(self, item):
+        """Drop one shortcut from the list (the program itself stays)."""
+        if not self.current_bottle:
+            return
+        target = item.data(Qt.UserRole)
+        name = item.text()
+        reply = QMessageBox.question(
+            self, "删除快捷方式",
+            f"从列表删除「{name}」？\n\n"
+            "只移除这条快捷方式，程序文件和容器里的数据都不会被删除。",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        self.current_bottle.forget_shortcut(target)
+        # Discovery rescans the container, so remember the removal or the
+        # entry comes straight back on the next list refresh.
+        self.current_bottle.hide_shortcut(target)
+        self._load_shortcuts()
 
     def refresh_programs(self):
         """Rescan the bottle's programs, offering to drop dead shortcuts."""
