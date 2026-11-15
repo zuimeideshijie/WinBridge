@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Optional, Dict
 
 from .config import Config
+from .sandbox import forget_prefix_cache
 from .wine import Wine
 
 # Environment type → display label (shared by every view showing a bottle)
@@ -65,6 +66,7 @@ class Bottle:
             "environment": "gaming",  # gaming, office, custom
             "version": self.wine.version,
             "wine_path": "",
+            "sandbox": "host",  # host | flatpak (sandboxed graphics runtime)
             "installed_components": [],
             "dll_overrides": {},
             "component_records": {},
@@ -106,6 +108,17 @@ class Bottle:
         self._save_meta()
         # Recreate Wine instance with the new path
         self.wine = Wine(value if value else self.config.wine_path)
+
+    @property
+    def sandbox(self) -> str:
+        """Runtime this bottle runs on: "host" or "flatpak"."""
+        return self._meta.get("sandbox", "host") or "host"
+
+    @sandbox.setter
+    def sandbox(self, value: str):
+        self._meta["sandbox"] = value or "host"
+        self._save_meta()
+        forget_prefix_cache(str(self.path))
 
     @property
     def created(self) -> str:
@@ -366,10 +379,24 @@ class Bottle:
         raise OSError(f"删除容器失败，目录仍存在: {self.path}")
 
     def run(self, executable: str, args: list = None) -> bool:
-        """Run an executable in the bottle."""
+        """Run an executable in the bottle.
+
+        The working directory is the program's own folder: engines from the
+        Win9x/XP era (Virtools, many installers) resolve their data files
+        relative to it, so launching from WinBridge's own cwd makes them
+        report "failed to initialize player" with every asset missing.
+        """
         if not self.exists:
             return False
-        result = self.wine.run(str(self.path), executable, args, wait=False)
+        workdir = None
+        try:
+            exe_path = Path(executable)
+            if exe_path.is_file():
+                workdir = str(exe_path.parent)
+        except (OSError, ValueError):
+            workdir = None
+        result = self.wine.run(str(self.path), executable, args,
+                               workdir=workdir, wait=False)
         return True
 
 
@@ -407,8 +434,14 @@ class BottleManager:
                       environment: str = "gaming",
                       windows_version: str = "win10",
                       description: str = "",
-                      wine_path: str = "") -> Optional[Bottle]:
-        """Create a new bottle."""
+                      wine_path: str = "",
+                      sandbox: str = "host") -> Optional[Bottle]:
+        """Create a new bottle.
+
+        `sandbox="flatpak"` creates the prefix with the flatpak runtime's
+        libraries (its own Mesa/Vulkan) instead of the host ones; everything
+        else — prefix path, Wine binary, programs — stays on the host.
+        """
         bottle_path = self.bottles_dir / name
         if bottle_path.exists():
             return None
@@ -417,7 +450,7 @@ class BottleManager:
         wine = Wine(wine_path) if wine_path else self.wine
 
         # Create the Wine prefix
-        success = wine.create_prefix(str(bottle_path), arch)
+        success = wine.create_prefix(str(bottle_path), arch, sandbox=sandbox)
         if not success:
             return None
 
@@ -432,6 +465,7 @@ class BottleManager:
         bottle._meta["windows_version"] = windows_version
         bottle._meta["description"] = description
         bottle._meta["version"] = wine.version
+        bottle._meta["sandbox"] = sandbox or "host"
         if wine_path:
             bottle._meta["wine_path"] = wine_path
         bottle._save_meta()

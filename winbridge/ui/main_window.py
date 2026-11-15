@@ -401,6 +401,7 @@ class MainWindow(QMainWindow):
             win_ver = dialog.windows_version_combo.currentText()
             desc = dialog.description.toPlainText().strip()
             wine_path = dialog.get_wine_path()
+            sandbox = dialog.get_sandbox()
 
             self.status_bar.showMessage(f"正在创建容器 '{name}'...")
             QApplication.processEvents()
@@ -408,7 +409,7 @@ class MainWindow(QMainWindow):
             bottle = self.bottle_manager.create_bottle(
                 name=name, arch=arch, environment=env,
                 windows_version=win_ver, description=desc,
-                wine_path=wine_path,
+                wine_path=wine_path, sandbox=sandbox,
             )
 
             if bottle:
@@ -477,6 +478,13 @@ class MainWindow(QMainWindow):
         current = self.bottle_list.currentItem()
         if current:
             name = current.data(Qt.UserRole)
+        bottle = self.bottle_manager.get_bottle(name) if name else None
+        if bottle and bottle.sandbox == "flatpak":
+            QMessageBox.information(
+                self, "任务管理器",
+                "该容器运行在 flatpak 沙箱中，沙箱内的进程对宿主不可见。\n"
+                "请在容器「运行环境」里切回宿主机后查看。")
+            return
         bottle_path = str(self.config.bottles_dir / name) if name else None
         dialog = TaskManagerDialog(self.wine, bottle_path, self)
         dialog.show()
@@ -648,7 +656,7 @@ class MainWindow(QMainWindow):
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
-        version = QLabel("版本 1.2.2 · Wine 容器管理器")
+        version = QLabel("版本 1.2.3 · Wine 容器管理器")
         version.setObjectName("muted")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)

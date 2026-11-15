@@ -473,6 +473,19 @@ class ComponentManager:
         if not info:
             return False, f"未知组件 '{component_name}'", {}, []
 
+        # Sandboxed bottles run Wine inside the flatpak runtime, which has no
+        # cabextract/7z/winetricks toolchain; installing here would also spawn
+        # a second wineserver for the same prefix. Ask for host mode instead.
+        try:
+            from .sandbox import sandbox_for_prefix
+            if sandbox_for_prefix(str(bottle_path)) is not None:
+                return (False,
+                        "该容器运行在 flatpak 沙箱中，无法安装组件。\n"
+                        "请先在容器「运行环境」里切换为「宿主机」再安装，"
+                        "装完可以切回沙箱。", {}, [])
+        except Exception:
+            pass
+
         try:
             # Custom direct install (bypasses winetricks entirely)
             if info.get("direct"):

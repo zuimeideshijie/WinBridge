@@ -18,6 +18,7 @@ from ..core.config import Config
 from ..core.wine import Wine
 from ..core.bottle import ENVIRONMENT_LABELS
 from ..core.download import ComponentManager
+from ..core.sandbox import app_installed as sandbox_available
 
 
 class CreateBottleDialog(QDialog):
@@ -71,6 +72,13 @@ class CreateBottleDialog(QDialog):
 
         self.arch_32 = QRadioButton("32 位 (Win32)")
         arch_layout.addWidget(self.arch_32)
+
+        # Radio buttons sharing a parent are auto-exclusive, so the arch pair
+        # and the runtime pair below would otherwise behave as one group:
+        # picking "flatpak 沙箱" would silently uncheck the architecture.
+        self.arch_group = QButtonGroup(self)
+        self.arch_group.addButton(self.arch_64)
+        self.arch_group.addButton(self.arch_32)
 
         arch_layout.addStretch()
         layout.addLayout(arch_layout)
@@ -131,6 +139,40 @@ class CreateBottleDialog(QDialog):
         self.wine_ver_hint = QLabel(f"当前: {self.wine.version}")
         self.wine_ver_hint.setObjectName("hint")
         layout.addWidget(self.wine_ver_hint)
+
+        # Runtime: host Wine vs. flatpak sandbox (own Mesa/Vulkan)
+        runtime_label = QLabel("运行环境")
+        runtime_label.setObjectName("fieldLabel")
+        layout.addWidget(runtime_label)
+
+        runtime_layout = QHBoxLayout()
+        runtime_layout.setSpacing(10)
+        self.runtime_host = QRadioButton("宿主机（默认）")
+        self.runtime_host.setChecked(True)
+        runtime_layout.addWidget(self.runtime_host)
+        self.runtime_sandbox = QRadioButton("flatpak 沙箱")
+        runtime_layout.addWidget(self.runtime_sandbox)
+
+        self.runtime_group = QButtonGroup(self)
+        self.runtime_group.addButton(self.runtime_host)
+        self.runtime_group.addButton(self.runtime_sandbox)
+
+        runtime_layout.addStretch()
+        layout.addLayout(runtime_layout)
+
+        self.runtime_hint = QLabel()
+        self.runtime_hint.setObjectName("hint")
+        self.runtime_hint.setWordWrap(True)
+        layout.addWidget(self.runtime_hint)
+
+        if sandbox_available():
+            self.runtime_hint.setText(
+                "沙箱使用 flatpak 运行时自带的图形库（Mesa/Vulkan），"
+                "宿主驱动跑不起来的老游戏可以选它；组件安装需切回宿主机。")
+        else:
+            self.runtime_sandbox.setEnabled(False)
+            self.runtime_hint.setText(
+                "未安装沙箱运行时，先执行 packaging/build-sandbox-runtime.sh")
 
         # Description
         desc_label = QLabel("描述 (可选)")
@@ -195,6 +237,12 @@ class CreateBottleDialog(QDialog):
         if self.wine_source_combo.currentIndex() == 1:
             return self.wine_path_input.text().strip() or self.config.wine_path
         return self.config.wine_path
+
+    def get_sandbox(self) -> str:
+        """Runtime chosen for the new bottle: "host" or "flatpak"."""
+        if self.runtime_sandbox.isEnabled() and self.runtime_sandbox.isChecked():
+            return "flatpak"
+        return "host"
 
 
 class FirstRunDialog(QDialog):

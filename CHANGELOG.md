@@ -1,5 +1,33 @@
 # 更新日志
 
+## [1.2.3] - 2026-11-15
+
+### 容器
+
+- **新建容器可选择「运行环境」**：新增 flatpak 沙箱选项。沙箱容器仍保存在
+  `~/.local/share/winbridge/bottles`、仍用系统 Wine，只是 Wine 进程跑在 flatpak
+  运行时里，图形库（Mesa/glvnd/Vulkan）来自运行时而不是宿主。适合宿主驱动跑不起来
+  的老游戏（D3D8 等），不必改系统 Mesa
+- **修复「架构」与「运行环境」不能同时选择**：Qt 里同一父窗口的单选按钮会自动并成
+  一组，选「flatpak 沙箱」会把架构一起取消勾选。现在两组各自用 `QButtonGroup` 隔离
+- 容器详情工具栏新增运行环境下拉，随时在「宿主机 / flatpak 沙箱」之间切换
+  （切换前会先停掉该容器的 wine 进程，避免两个 wineserver 抢同一个前缀）
+- 沙箱容器内暂不支持安装组件：flatpak 运行时没有 cabextract/7z/winetricks 工具链，
+  安装时会明确提示切回「宿主机」，装完再切回来
+- 沙箱运行时用 `packaging/build-sandbox-runtime.sh` 构建并安装（`--uninstall` 可卸载）：
+  它只是一个仅含 bash 的 flatpak 应用，不需要 SDK，也不随 deb 分发
+
+### 程序启动
+
+- **修复从快捷方式启动老程序时工作目录不对**：`Bottle.run()` 现在以程序所在目录作为
+  工作目录。Virtools（平衡球）、部分安装器这类按相对路径找 `..\Managers`、`Textures\`
+  的引擎，之前在 WinBridge 自己的目录下启动会直接报「初始化失败」
+
+### 清理
+
+- 删除仓库里过期的界面原型 `ui迎来大改动.html` 与升级介绍桌面项
+  `WinBridge迎来全新升级.desktop`
+
 ## [1.2.2] - 2026-11-14
 
 ### 注册表

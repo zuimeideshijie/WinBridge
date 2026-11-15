@@ -137,8 +137,33 @@ sudo dpkg -i /安装路径/安装包名
 | **架构** | Win32（32位）或 Win64（64位） |
 | **Windows 版本** | 默认 Windows 10，可根据应用兼容性调整 |
 | **Wine 版本** | 系统默认或自定义路径 |
+| **运行环境** | 宿主机（默认）或 flatpak 沙箱，见下 |
 
 3. 点击 **"创建"** 完成。
+
+#### 运行环境：宿主机 / flatpak 沙箱
+
+「flatpak 沙箱」让容器的 Wine 进程跑在 flatpak 运行时里，**图形库（Mesa/glvnd/Vulkan）
+来自运行时**，前缀目录、Wine 二进制、安装的程序都还在宿主原来的位置——换的只是驱动栈。
+
+- 适合宿主驱动/图形库跑不起来的老游戏（例如 D3D8 时代的作品），不必升级或降级系统 Mesa。
+- 需要先安装沙箱运行时：
+
+  ```bash
+  bash packaging/build-sandbox-runtime.sh              # 构建并安装（用户级）
+  bash packaging/build-sandbox-runtime.sh --uninstall  # 卸载
+  ```
+
+  它只是一个仅含 `bash` 的 flatpak 应用（`io.github.zuimeideshijie.WinBridgeRuntime`），
+  不带 Wine 也不带游戏，构建时不需要 SDK。
+- 开关在容器详情的工具栏上，随时可以切回宿主机：
+
+  | 操作 | 宿主机 | flatpak 沙箱 |
+  |------|--------|--------------|
+  | 运行程序 | 支持 | 支持 |
+  | 安装组件 | 支持 | 不支持（提示先切回宿主机） |
+  | 图形库来源 | 系统 Mesa | flatpak 运行时 Mesa |
+  | 进程位置 | 宿主 | 独立 PID namespace（「停止/删除容器」会整包结束） |
 
 ### 3.2 重命名容器
 

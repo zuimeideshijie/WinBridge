@@ -24,6 +24,7 @@ from ..core.bottle import (Bottle, BottleManager, ENVIRONMENT_LABELS,
 from ..core.wine import Wine
 from ..core.config import Config
 from ..core.download import ComponentManager
+from ..core.sandbox import app_installed
 from ..core.theme import ThemeManager
 from .dialogs import CreateBottleDialog, FirstRunDialog, TaskManagerDialog
 
@@ -142,6 +143,19 @@ class BottleDetailWidget(QWidget):
         self.bottle_title = QLabel("选择容器以查看详情")
         self.bottle_title.setObjectName("toolbarTitle")
         toolbar_layout.addWidget(self.bottle_title)
+
+        # Runtime selector: host Wine vs. flatpak sandbox (own Mesa/Vulkan)
+        self.runtime_combo = QComboBox()
+        self.runtime_combo.setObjectName("btnDefault")
+        self.runtime_combo.addItem("运行环境: 宿主机", "host")
+        if app_installed():
+            self.runtime_combo.addItem("运行环境: flatpak 沙箱", "flatpak")
+        self.runtime_combo.setToolTip(
+            "flatpak 沙箱用运行时自带的图形库（Mesa/Vulkan），"
+            "适合宿主驱动跑不起来的老游戏；组件安装需切回宿主机。")
+        self.runtime_combo.setEnabled(False)
+        self.runtime_combo.currentIndexChanged.connect(self.on_runtime_changed)
+        toolbar_layout.addWidget(self.runtime_combo)
 
         toolbar_layout.addStretch()
 
@@ -1025,7 +1039,36 @@ class BottleDetailWidget(QWidget):
         """Enable or disable controls."""
         for btn in [self.btn_run, self.btn_winecfg, self.btn_delete]:
             btn.setEnabled(enabled)
+        self.runtime_combo.setEnabled(enabled and self.runtime_combo.count() > 1)
         self.tabs.setEnabled(enabled)
+
+    def _sync_runtime_combo(self):
+        """Show the runtime stored in the bottle, without re-triggering."""
+        if not self.current_bottle:
+            return
+        index = self.runtime_combo.findData(self.current_bottle.sandbox)
+        if index >= 0 and index != self.runtime_combo.currentIndex():
+            self.runtime_combo.blockSignals(True)
+            self.runtime_combo.setCurrentIndex(index)
+            self.runtime_combo.blockSignals(False)
+
+    def on_runtime_changed(self, index: int):
+        """Switch the bottle between host Wine and the flatpak sandbox."""
+        if not self.current_bottle:
+            return
+        mode = self.runtime_combo.itemData(index) or "host"
+        if mode == self.current_bottle.sandbox:
+            return
+        if mode == "flatpak" and not app_installed():
+            QMessageBox.warning(self, "运行环境",
+                                "未安装 WinBridge 沙箱运行时。\n"
+                                "请先执行 packaging/build-sandbox-runtime.sh")
+            self._sync_runtime_combo()
+            return
+        # A running sandboxed wineserver would survive the switch.
+        self.wine.kill(str(self.current_bottle.path))
+        self.current_bottle.sandbox = mode
+        self.bottle_updated.emit(self.current_bottle.name)
 
     def load_bottle(self, bottle: Bottle):
         """Load a bottle for display."""
@@ -1034,6 +1077,7 @@ class BottleDetailWidget(QWidget):
 
         # Update title
         self.bottle_title.setText(bottle.name)
+        self._sync_runtime_combo()
 
         # Update overview cards
         self._update_info_card(self.card_arch, "架构",
@@ -1470,6 +1514,12 @@ class BottleDetailWidget(QWidget):
 
     def open_task_manager(self):
         """Open the Windows-style Task Manager for the current bottle."""
+        if self.current_bottle and self.current_bottle.sandbox == "flatpak":
+            QMessageBox.information(
+                self, "任务管理器",
+                "该容器运行在 flatpak 沙箱中，沙箱内的进程对宿主不可见。\n"
+                "请在容器「运行环境」里切回宿主机后查看。")
+            return
         bottle_path = str(self.current_bottle.path) if self.current_bottle else None
         dialog = TaskManagerDialog(self.wine, bottle_path, self)
         dialog.show()
@@ -1510,6 +1560,7 @@ class BottleDetailWidget(QWidget):
                 return
             self.current_bottle = None
             self.set_controls_enabled(False)
+            self.runtime_combo.setCurrentIndex(0)
             self.bottle_title.setText("选择容器以查看详情")
             self.bottle_deleted.emit(name)
 

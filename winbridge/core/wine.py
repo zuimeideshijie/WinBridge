@@ -7,7 +7,9 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
+
+from .sandbox import SandboxRuntime, sandbox_for_prefix
 
 
 # HKLM font table in system.reg. Wine fills it with every host font the first
@@ -40,6 +42,16 @@ _HOST_CORE_FONTS = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuMono.ttf",
 ]
+
+
+def _sandbox_env(environment: Dict[str, str]) -> Dict[str, str]:
+    """Wine variables a sandboxed run has to re-export inside the sandbox.
+
+    `flatpak run` does not forward arbitrary environment variables, so the
+    ones Wine itself reads are passed explicitly.
+    """
+    return {k: v for k, v in environment.items()
+            if k.startswith("WINE") and v is not None}
 
 
 class Wine:
@@ -75,6 +87,20 @@ class Wine:
             return str(ws)
         return "wineserver"
 
+    def _sandbox(self, bottle_path: str = None,
+                 mode: str = "") -> Optional[SandboxRuntime]:
+        """Sandbox runtime for a prefix (None means: run on the host).
+
+        `mode` overrides the bottle.json lookup for calls made before the
+        prefix has a bottle.json (container creation).
+        """
+        if mode == "flatpak":
+            runtime = SandboxRuntime()
+            return runtime if runtime.available() else None
+        if not bottle_path:
+            return None
+        return sandbox_for_prefix(str(bottle_path))
+
     def run(self, bottle_path: str, executable: str,
             args: list = None, workdir: str = None,
             env: dict = None, wait: bool = True) -> subprocess.Popen:
@@ -88,6 +114,11 @@ class Wine:
         cmd = [self.wine_path, executable]
         if args:
             cmd.extend(args)
+
+        runtime = self._sandbox(bottle_path)
+        if runtime is not None:
+            cmd = runtime.command(cmd, self.wine_path,
+                                  _sandbox_env(environment))
 
         if wait:
             return subprocess.run(
@@ -112,6 +143,16 @@ class Wine:
             environment.update(env)
 
         cmd = f"{shlex.quote(self.wine_path)} {wine_cmd}"
+        runtime = self._sandbox(bottle_path)
+        if runtime is not None:
+            cmd = f"{shlex.quote(runtime.visible_wine(self.wine_path))} {wine_cmd}"
+            return subprocess.run(
+                runtime.shell_command(cmd, self.wine_path,
+                                      _sandbox_env(environment)),
+                env=environment,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=timeout
+            )
         return subprocess.run(
             cmd, env=environment, shell=True,
             capture_output=True, text=True,
@@ -148,20 +189,41 @@ class Wine:
         env = os.environ.copy()
         if bottle_path:
             env["WINEPREFIX"] = bottle_path
+        runtime = self._sandbox(bottle_path) if bottle_path else None
         try:
-            subprocess.run([self.wineserver_path, "-k"],
-                           env=env, capture_output=True, timeout=10)
+            self._run_wineserver(["-k"], env, runtime, bottle_path, timeout=10)
             try:
                 # -w blocks until the wineserver has fully shut down
-                subprocess.run([self.wineserver_path, "-w"],
-                               env=env, capture_output=True, timeout=30)
+                self._run_wineserver(["-w"], env, runtime, bottle_path,
+                                     timeout=30)
             except subprocess.TimeoutExpired:
                 # Still alive — force-kill the wineserver for this prefix
-                self._force_kill_wineserver(bottle_path)
+                if runtime is not None:
+                    # A sandboxed wineserver lives in another PID namespace,
+                    # so the host cannot signal it: drop the whole app.
+                    runtime.kill()
+                else:
+                    self._force_kill_wineserver(bottle_path)
         except subprocess.TimeoutExpired:
-            self._force_kill_wineserver(bottle_path)
+            if runtime is not None:
+                runtime.kill()
+            else:
+                self._force_kill_wineserver(bottle_path)
         except Exception:
             pass
+
+    def _run_wineserver(self, args, env, runtime=None, bottle_path=None,
+                        timeout: int = 10):
+        """Run `wineserver <args>`, inside the sandbox when the bottle needs it."""
+        cmd = [self.wineserver_path, *args]
+        if runtime is not None:
+            # Inside the sandbox the wineserver has to be addressed through
+            # its real path too (/usr/bin is the runtime, not the host).
+            wine_bin = Path(runtime.visible_wine(self.wine_path))
+            cmd = [str(wine_bin.parent / "wineserver"), *args]
+            cmd = runtime.command(cmd, self.wine_path, _sandbox_env(env))
+        return subprocess.run(cmd, env=env, capture_output=True,
+                              timeout=timeout)
 
     def _force_kill_wineserver(self, bottle_path: str = None):
         """SIGKILL the wineserver(s) for a prefix (fallback after -w timeout).
@@ -243,16 +305,28 @@ class Wine:
             pass
         return "unknown"
 
-    def create_prefix(self, bottle_path: str, arch: str = "win64") -> bool:
-        """Create a new Wine prefix (bottle)."""
+    def create_prefix(self, bottle_path: str, arch: str = "win64",
+                      sandbox: str = "") -> bool:
+        """Create a new Wine prefix (bottle).
+
+        `sandbox` selects the runtime for this creation only ("flatpak" or
+        "" for the host): the prefix has no bottle.json yet, so the usual
+        per-bottle lookup cannot answer.
+        """
         environment = os.environ.copy()
         environment["WINEPREFIX"] = bottle_path
         environment["WINEARCH"] = arch
         environment["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d"
 
+        runtime = self._sandbox(mode=sandbox)
+        cmd = [self.wine_path, "wineboot", "-u"]
+        if runtime is not None:
+            cmd = runtime.command(cmd, self.wine_path,
+                                  _sandbox_env(environment))
+
         try:
             result = subprocess.run(
-                [self.wine_path, "wineboot", "-u"],
+                cmd,
                 env=environment,
                 capture_output=True, text=True,
                     encoding="utf-8", errors="replace",
@@ -260,21 +334,22 @@ class Wine:
             )
             # Let the wineserver flush system.reg before inject_fonts() edits
             # it — otherwise its in-memory copy overwrites the font table.
-            self._stop_prefix(bottle_path)
+            self._stop_prefix(bottle_path, sandbox=sandbox)
             return result.returncode == 0
         except subprocess.TimeoutExpired:
             return False
         except Exception:
             return False
 
-    def _stop_prefix(self, bottle_path: str):
+    def _stop_prefix(self, bottle_path: str, sandbox: str = ""):
         """Shut the bottle's wineserver down and wait for it to flush."""
         environment = os.environ.copy()
         environment["WINEPREFIX"] = bottle_path
+        runtime = self._sandbox(bottle_path, mode=sandbox)
         for args in (["-k"], ["-w"]):
             try:
-                subprocess.run([self.wineserver_path] + args, env=environment,
-                               capture_output=True, timeout=90)
+                self._run_wineserver(args, environment, runtime, bottle_path,
+                                     timeout=90)
             except Exception:
                 pass
 
@@ -442,14 +517,18 @@ class Wine:
         env = os.environ.copy()
         env["WINEPREFIX"] = bottle_path
         env["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d"
+        cmd = [self.wine_path, "reg", "add",
+               "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts",
+               "/v", f"{font_name} (TrueType)",
+               "/t", "REG_SZ",
+               "/d", file_name,
+               "/f"]
+        runtime = self._sandbox(bottle_path)
+        if runtime is not None:
+            cmd = runtime.command(cmd, self.wine_path, _sandbox_env(env))
         try:
             result = subprocess.run(
-                [self.wine_path, "reg", "add",
-                 "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts",
-                 "/v", f"{font_name} (TrueType)",
-                 "/t", "REG_SZ",
-                 "/d", file_name,
-                 "/f"],
+                cmd,
                 env=env, capture_output=True, text=True,
                     encoding="utf-8", errors="replace", timeout=30
             )

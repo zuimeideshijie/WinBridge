@@ -112,7 +112,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("WinBridge")
-    app.setApplicationVersion("1.2.2")
+    app.setApplicationVersion("1.2.3")
     app.setOrganizationName("WinBridge")
 
     # Initialize theme
