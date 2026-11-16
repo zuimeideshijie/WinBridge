@@ -84,6 +84,30 @@ WinBridge 自带 Wine 版本管理，不再需要先按 WineHQ 教程手动安�
 sudo dpkg -i /安装路径/安装包名
 ```
 
+**通过 APT 源安装（测试源，尚未签名）**
+
+一键安装脚本（会检查 apt 环境、配置源、更新索引、安装并验证）：
+
+```bash
+curl -fsSL https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/install.sh \
+  -o /tmp/winbridge-install.sh
+sudo bash /tmp/winbridge-install.sh
+```
+
+也可以手动添加源。Gitee 的仓库名是 `WinBidge`（页面标题显示为 WinBridge），
+源地址必须用前者：
+
+```bash
+echo "deb [trusted=yes] https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/ stable main" \
+  | sudo tee /etc/apt/sources.list.d/winbridge.list
+sudo apt update
+sudo apt install winbridge
+```
+
+> 当前仓库未做 GPG 签名，所以先用 `[trusted=yes]`。签名完成后安装脚本会自动
+> 检测 `public.key` 并切换到 `signed-by`；也可以手动使用
+> `/usr/share/keyrings/winbridge-archive-keyring.gpg`。
+
 首次启动时，您将看到欢迎界面，引导您创建第一个容器。
 
 ### 2.2 创建第一个容器

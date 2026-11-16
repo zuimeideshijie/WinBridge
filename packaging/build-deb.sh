@@ -83,8 +83,8 @@ Priority: optional
 Architecture: all
 Installed-Size: $INSTALLED_SIZE
 Maintainer: zuimeideshijie <zuimeideshijie@zuimeideshijie.zuimeideshijie.com>
-Depends: python3 (>= 3.8), python3-pyqt5, wine | wine64 | wine-stable, cabextract, p7zip-full, curl, zstd, xdg-utils
-Recommends: imagemagick, glib2.0-bin, desktop-file-utils
+Depends: python3 (>= 3.8), python3-pyqt5, cabextract, p7zip-full, curl, zstd, xdg-utils
+Recommends: wine | wine64 | wine-stable, imagemagick, glib2.0-bin, desktop-file-utils
 Homepage: https://gitcode.com/2503_90323139/WinBridge
 Description: Wine bottle manager with a modern Qt interface
  WinBridge creates and manages Wine prefixes (bottles), installs common

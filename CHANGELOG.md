@@ -1,5 +1,23 @@
 # 更新日志
 
+## [未发布]
+
+### 打包与 APT 源
+
+- **把 Wine 从硬依赖改为推荐依赖**：deb 的 `Depends` 不再强制拉取
+  `wine | wine64 | wine-stable`，改放到 `Recommends`，用户可以只装 WinBridge
+  再在「Wine 版本管理」里下载运行时
+- **新增 `packaging/build-apt-repo.sh`**：从 `debian/winbridge_*.deb` 生成可托管的
+  静态 APT 仓库（`apt-repo/pool/main` + `dists/stable` 的 `Packages`、`Release`），
+  支持用 `WINBRIDGE_GPG_KEY` 生成 `InRelease` / `Release.gpg` / `public.key`
+- **APT 源改走 Gitee raw**：Gitee 仓库名是 `WinBidge`（页面标题为 WinBridge），
+  源地址为 `https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/`；README 先加入
+  未签名的 `[trusted=yes]` 测试安装命令
+- **新增 `packaging/install.sh` 一键安装脚本**：检查 Linux/apt/架构与网络，自动识别
+  仓库是否提供 `public.key`（有则用 `signed-by`，否则用 `trusted=yes`），写源、
+  只更新该源索引、安装/升级 winbridge，并回读 deb 版本与代码版本做验证；脚本随
+  APT 仓库发布到 `install.sh`
+
 ## [1.3] - 2026-11-16
 
 ### Wine 版本管理
