@@ -9,8 +9,22 @@
 # index, installs/upgrades winbridge and verifies the installed version.
 set -eu
 
-BASE_URL="${WINBRIDGE_APT_BASE:-https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/}"
+# Every base mirrors the same `apt-repo` branch. GitHub raw is fetched through
+# the project's gh-proxy mirror chain (same list WinBridge uses for downloads);
+# Gitee stays as the last resort. The script picks the first base that serves
+# the root `Packages` (flat archive), so one slow mirror does not block users.
+GITHUB_RAW="https://raw.githubusercontent.com/zuimeideshijie/WinBridge/apt-repo/"
+DEFAULT_BASES="
+https://gh-proxy.org/$GITHUB_RAW
+https://v6.gh-proxy.org/$GITHUB_RAW
+https://gh-proxy.com/$GITHUB_RAW
+https://ghproxy.net/$GITHUB_RAW
+$GITHUB_RAW
+https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/
+"
+BASE_URL="${WINBRIDGE_APT_BASE:-}"
 BASE_URL="${BASE_URL%/}"
+CHECK_ONLY="${CHECK_ONLY:-0}"
 SOURCE_FILE=/etc/apt/sources.list.d/winbridge.list
 KEYRING=/usr/share/keyrings/winbridge-archive-keyring.gpg
 
@@ -18,7 +32,8 @@ usage() {
     cat <<EOF
 用法: sudo bash install.sh [--base URL]
 
-  --base URL   使用自定义 APT 源根地址（默认 Gitee raw）
+  --base URL   使用自定义 APT 源根地址（默认依次尝试 gh-proxy → GitHub → Gitee）
+  --check      只探测各镜像是否已同步，打印可用源后退出（不安装）
   -h, --help   显示帮助
 EOF
 }
@@ -33,6 +48,10 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -ge 2 ] || die "--base 缺少 URL"
             BASE_URL="${2%/}"
             shift 2
+            ;;
+        --check)
+            CHECK_ONLY=1
+            shift
             ;;
         -h|--help)
             usage
@@ -74,7 +93,9 @@ case "$ARCH" in
     *) die "当前仓库只提供 amd64/i386 索引，检测到 $ARCH" ;;
 esac
 
-if [ "$(id -u)" -ne 0 ]; then
+if [ "$CHECK_ONLY" = "1" ]; then
+    SUDO=
+elif [ "$(id -u)" -ne 0 ]; then
     command -v sudo >/dev/null 2>&1 || die "需要 root 或 sudo 权限"
     sudo -v || die "sudo 授权失败"
     SUDO=sudo
@@ -98,14 +119,36 @@ download() {
     fi
 }
 
-log "检查源: $BASE_URL"
-# Flat archive: <base>/Packages is the only index we depend on, so a stale
-# CDN copy of Release can never break the hash check (Gitee caches each path
-# separately — that mismatch was the "Hash 校验和不符" failure).
-download "$BASE_URL/Packages" "$TMP_DIR/Packages" \
-    || die "无法读取仓库 Packages，请检查网络或 --base 地址"
-grep -q '^Package: winbridge' "$TMP_DIR/Packages" \
-    || die "Packages 文件格式不对，源地址可能不是 WinBridge APT 仓库"
+# Flat archive: <base>/Packages is the only index we depend on. A dists-style
+# repo needs Release, and every mirror caches each path separately — a stale
+# Release next to a fresh Packages makes apt abort with "Hash 校验和不符".
+if [ -n "$BASE_URL" ]; then
+    CANDIDATES="$BASE_URL"
+else
+    CANDIDATES="$DEFAULT_BASES"
+fi
+
+CHOSEN=""
+for candidate in $CANDIDATES; do
+    candidate="${candidate%/}"
+    log "检查源: $candidate"
+    if download "$candidate/Packages" "$TMP_DIR/Packages" 2>/dev/null \
+            && grep -q '^Package: winbridge' "$TMP_DIR/Packages"; then
+        CHOSEN="$candidate"
+        break
+    fi
+    warn "该源暂不可用（可能还没同步），尝试下一个"
+done
+
+[ -n "$CHOSEN" ] || die "所有镜像都还没有可用的 Packages 索引。
+可能是刚发布、镜像仍在同步（通常几分钟到一小时）。请稍后重试，
+或用 --base 指定一个自建源地址。"
+BASE_URL="$CHOSEN"
+log "使用源: $BASE_URL"
+if [ "$CHECK_ONLY" = "1" ]; then
+    log "检测结果: $BASE_URL （索引含 $(grep -c '^Package: winbridge' "$TMP_DIR/Packages") 个 winbridge 条目）"
+    exit 0
+fi
 
 OLD_VERSION=$(dpkg-query -W -f='${Version}' winbridge 2>/dev/null || true)
 if [ -n "$OLD_VERSION" ]; then
