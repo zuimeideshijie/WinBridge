@@ -95,24 +95,23 @@ done
 cp -f "$DISTS/main/binary-amd64/Packages" "$REPO/Packages"
 gzip -9cf "$REPO/Packages" > "$REPO/Packages.gz"
 
-# Never leave previous index/signature files where apt-ftparchive would
-# checksum them (including Release itself) as part of the new Release.
+# Never leave previous index/signature files behind: a Release left over from
+# an older build is exactly what breaks clients (see below).
 rm -f "$DISTS/Release" "$DISTS/InRelease" "$DISTS/Release.gpg" \
       "$REPO/public.key"
-REL_TMP="$REPO/.Release.tmp"
-
-apt-ftparchive \
-    -o APT::FTPArchive::Release::Origin=WinBridge \
-    -o APT::FTPArchive::Release::Label=WinBridge \
-    -o APT::FTPArchive::Release::Suite=stable \
-    -o APT::FTPArchive::Release::Codename=stable \
-    -o APT::FTPArchive::Release::Architectures="amd64 i386" \
-    -o APT::FTPArchive::Release::Components=main \
-    -o APT::FTPArchive::Release::Description="WinBridge APT repository" \
-    release dists/stable > "$REL_TMP"
-mv "$REL_TMP" "$DISTS/Release"
 
 if [ -n "${WINBRIDGE_GPG_KEY:-}" ]; then
+    REL_TMP="$REPO/.Release.tmp"
+    apt-ftparchive \
+        -o APT::FTPArchive::Release::Origin=WinBridge \
+        -o APT::FTPArchive::Release::Label=WinBridge \
+        -o APT::FTPArchive::Release::Suite=stable \
+        -o APT::FTPArchive::Release::Codename=stable \
+        -o APT::FTPArchive::Release::Architectures="amd64 i386" \
+        -o APT::FTPArchive::Release::Components=main \
+        -o APT::FTPArchive::Release::Description="WinBridge APT repository" \
+        release dists/stable > "$REL_TMP"
+    mv "$REL_TMP" "$DISTS/Release"
     gpg --batch --yes --default-key "$WINBRIDGE_GPG_KEY" \
         --clearsign -o "$DISTS/InRelease" "$DISTS/Release"
     gpg --batch --yes --default-key "$WINBRIDGE_GPG_KEY" \
@@ -121,8 +120,13 @@ if [ -n "${WINBRIDGE_GPG_KEY:-}" ]; then
         --armor --export "$WINBRIDGE_GPG_KEY" > "$REPO/public.key"
     echo "==> 已用 GPG 密钥 $WINBRIDGE_GPG_KEY 签名"
 else
-    echo "==> 未签名（未设置 WINBRIDGE_GPG_KEY）"
-    echo "    测试可先用 [trusted=yes]，正式发布请生成并配置 GPG 密钥。"
+    # Unsigned repo ([trusted=yes]) — skip Release entirely. Every mirror
+    # caches each path on its own, so a stale Release next to a fresh
+    # Packages makes apt abort with "Hash 校验和不符" (hit on both Gitee and
+    # GitHub). Without Release apt reads Packages directly and cannot
+    # mismatch; the flat root Packages is still the recommended layout.
+    echo "==> 未签名：不生成 Release（避免镜像端 Release/Packages 不同步）"
+    echo "    客户端用 [trusted=yes]，正式发布请生成并配置 GPG 密钥。"
 fi
 
 echo "==> 完成"
@@ -132,5 +136,6 @@ if [ -f "$DISTS/InRelease" ]; then
 else
     echo "    源（扁平，推荐）: deb [trusted=yes] https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/ ./"
     echo "    源（分栏，旧）:   deb [trusted=yes] https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/ stable main"
+    echo "    （未签名仓库不发布 Release，分栏源也能直接用，不会报哈希不符）"
 fi
 echo "    Gitee 仓库名是 WinBidge（human_name 才是 WinBridge），地址不能写成 WinBridge。"

@@ -116,7 +116,8 @@ sudo apt install winbridge
 > 仓库用「扁平」布局（只依赖根目录的 `Packages`）。旧写法
 > `…/raw/apt-repo/ stable main` 依赖 `Release` 校验，而 Gitee/GitHub 的 raw
 > CDN 按文件缓存，发布后容易出现 `Release` 与 `Packages` 不同步、报
-> `Hash 校验和不符`，请改用上面这条。
+> `Hash 校验和不符`。未签名仓库现在**不再发布 `Release`**，所以两种写法都可用，
+> 但仍推荐扁平的上面这条。
 
 **安装 / 管理 Wine**
 
