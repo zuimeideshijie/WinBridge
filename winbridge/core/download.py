@@ -78,7 +78,7 @@ _SEGMENT_MIN_PIECE = 1 * 1024 * 1024
 def _open_url(url: str, timeout: int, method: str = None,
               headers: dict = None):
     """urlopen wrapper: MS hosts skip cert verification, others don't."""
-    request_headers = {"User-Agent": "WinBridge/1.3.2"}
+    request_headers = {"User-Agent": "WinBridge/1.3.3"}
     request_headers.update(headers or {})
     request = urllib.request.Request(url, headers=request_headers, method=method)
     host = (urllib.parse.urlsplit(url).hostname or "").lower()

@@ -17,6 +17,10 @@ from .wine import Wine
 # the form Wine's own `reg` command expects.
 X11_DRIVER_KEY = r"Software\Wine\X11 Driver"
 DESKTOPS_KEY = r"Software\Wine\Explorer\Desktops"
+# Wine's switch for the virtual desktop: names which entry under Desktops is
+# active. Without it the size alone does nothing, and leaving it behind keeps
+# a screen-sized desktop alive after the size was deleted.
+EXPLORER_KEY = r"Software\Wine\Explorer"
 
 # Environment type → display label (shared by every view showing a bottle)
 ENVIRONMENT_LABELS = {
@@ -398,18 +402,41 @@ class Bottle:
                                     "Y" if enabled else "N")
 
     @property
+    def virtual_desktop_enabled(self) -> bool:
+        """Wine's switch for the virtual desktop (`Explorer\\Desktop`).
+
+        This is what winecfg and Bottles toggle; the size under
+        ``Desktops\\<name>`` alone does nothing.
+        """
+        return bool((self._hkcu_value(EXPLORER_KEY, "Desktop") or "").strip())
+
+    @property
     def virtual_desktop(self) -> str:
-        """Virtual desktop size such as "1920x1080"; empty when disabled."""
+        """Size of the active virtual desktop ("1920x1080"); "" when off."""
+        if not self.virtual_desktop_enabled:
+            return ""
         return (self._hkcu_value(DESKTOPS_KEY, "Default") or "").strip()
 
     def set_virtual_desktop(self, size: str) -> tuple:
-        """Enable (``WxH``) or disable the virtual desktop for this bottle."""
+        """Enable (``WxH``) or disable the virtual desktop for this bottle.
+
+        Matches winecfg/Bottles: ``Explorer\\Desktop`` names the desktop and
+        ``Desktops\\<name>`` holds its size. Writing only the size leaves an
+        already-enabled desktop untouched, and clearing only the size keeps a
+        screen-sized desktop alive — that is the "关掉了窗口还是很大" case.
+        """
         size = (size or "").strip().lower().replace("×", "x")
         if not size:
+            ok, error = self._delete_hkcu_value(EXPLORER_KEY, "Desktop")
+            if not ok:
+                return False, error
             return self._delete_hkcu_value(DESKTOPS_KEY, "Default")
         if not re.fullmatch(r"\d{3,5}x\d{3,5}", size):
             return False, "虚拟桌面尺寸格式应为 宽x高，例如 1920x1080。"
-        return self._set_hkcu_value(DESKTOPS_KEY, "Default", size)
+        ok, error = self._set_hkcu_value(DESKTOPS_KEY, "Default", size)
+        if not ok:
+            return False, error
+        return self._set_hkcu_value(EXPLORER_KEY, "Desktop", "Default")
 
     @property
     def dll_overrides(self) -> Dict[str, str]:

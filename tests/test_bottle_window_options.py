@@ -96,17 +96,22 @@ class WindowOptionTests(unittest.TestCase):
         self.assertEqual(self.bottle.virtual_desktop, "")
 
     def test_reads_virtual_desktop_from_user_reg(self):
-        self.write_user_reg('[Software\\\\Wine\\\\Explorer\\\\Desktops] 1',
+        self.write_user_reg('[Software\\\\Wine\\\\Explorer] 1',
+                            '"Desktop"="Default"',
+                            '[Software\\\\Wine\\\\Explorer\\\\Desktops] 1',
                             '"Default"="1280x720"')
+        self.assertTrue(self.bottle.virtual_desktop_enabled)
         self.assertEqual(self.bottle.virtual_desktop, "1280x720")
 
-    def test_set_virtual_desktop_writes_size(self):
+    def test_set_virtual_desktop_writes_size_and_switch(self):
         ok, error = self.bottle.set_virtual_desktop("1920x1080")
         self.assertTrue(ok, error)
         self.assertEqual(
             self.commands,
             ["reg add 'HKCU\\Software\\Wine\\Explorer\\Desktops' "
-             "/v Default /t REG_SZ /d 1920x1080 /f"])
+             "/v Default /t REG_SZ /d 1920x1080 /f",
+             "reg add 'HKCU\\Software\\Wine\\Explorer' "
+             "/v Desktop /t REG_SZ /d Default /f"])
 
     def test_fullwidth_multiply_sign_is_accepted(self):
         ok, _error = self.bottle.set_virtual_desktop("1920×1080")
@@ -119,15 +124,34 @@ class WindowOptionTests(unittest.TestCase):
         self.assertIn("宽x高", error)
         self.assertEqual(self.commands, [])
 
-    def test_empty_size_deletes_the_value(self):
-        self.write_user_reg('[Software\\\\Wine\\\\Explorer\\\\Desktops] 1',
+    def test_empty_size_deletes_both_values(self):
+        self.write_user_reg('[Software\\\\Wine\\\\Explorer] 1',
+                            '"Desktop"="Default"',
+                            '[Software\\\\Wine\\\\Explorer\\\\Desktops] 1',
                             '"Default"="1280x720"')
         ok, error = self.bottle.set_virtual_desktop("")
         self.assertTrue(ok, error)
         self.assertEqual(
             self.commands,
-            ["reg delete 'HKCU\\Software\\Wine\\Explorer\\Desktops' "
+            ["reg delete 'HKCU\\Software\\Wine\\Explorer' /v Desktop /f",
+             "reg delete 'HKCU\\Software\\Wine\\Explorer\\Desktops' "
              "/v Default /f"])
+
+    def test_size_without_switch_is_reported_as_disabled(self):
+        # What 1.3.2 left behind: size set, Wine's switch never written.
+        self.write_user_reg(
+            '[Software\\\\Wine\\\\Explorer\\\\Desktops] 1',
+            '"Default"="1920x1080"')
+        self.assertFalse(self.bottle.virtual_desktop_enabled)
+        self.assertEqual(self.bottle.virtual_desktop, "")
+
+    def test_switch_makes_the_size_active(self):
+        self.write_user_reg('[Software\\\\Wine\\\\Explorer] 1',
+                            '"Desktop"="Default"',
+                            '[Software\\\\Wine\\\\Explorer\\\\Desktops] 1',
+                            '"Default"="1920x1080"')
+        self.assertTrue(self.bottle.virtual_desktop_enabled)
+        self.assertEqual(self.bottle.virtual_desktop, "1920x1080")
 
 
 if __name__ == "__main__":

@@ -672,7 +672,7 @@ class BottleDetailWidget(QWidget):
         btn_apply_window.setObjectName("btnDefault")
         btn_apply_window.clicked.connect(self.apply_window_options)
         window_apply_row.addWidget(btn_apply_window)
-        window_hint = QLabel("修改后重新启动容器里的程序才生效")
+        window_hint = QLabel("修改后需重启容器（不只是重启程序）才生效")
         window_hint.setObjectName("hint")
         window_apply_row.addWidget(window_hint, 1)
         section_layout.addLayout(window_apply_row)
@@ -2101,10 +2101,11 @@ class BottleDetailWidget(QWidget):
             return
         bottle = self.current_bottle
         self.decorated_check.setChecked(bottle.window_decorated)
-        size = bottle.virtual_desktop
-        self.virtual_desktop_size.setText(size or self._default_desktop_size())
-        self.virtual_desktop_check.setChecked(bool(size))
-        self.virtual_desktop_size.setEnabled(bool(size))
+        enabled = bottle.virtual_desktop_enabled
+        self.virtual_desktop_size.setText(
+            bottle.virtual_desktop or self._default_desktop_size())
+        self.virtual_desktop_check.setChecked(enabled)
+        self.virtual_desktop_size.setEnabled(enabled)
 
     def apply_window_options(self):
         """Write "Decorated" and the virtual desktop size into the bottle."""
@@ -2124,6 +2125,17 @@ class BottleDetailWidget(QWidget):
             QMessageBox.warning(self, "应用失败", "\n".join(errors))
             return
         self.bottle_updated.emit(self.current_bottle.name)
+        # Wine reads both values when a session starts, and the virtual
+        # desktop window belongs to that session — restarting only the
+        # program leaves the old (screen-sized) desktop in place.
+        reply = QMessageBox.question(
+            self, "已保存",
+            "窗口设置已写入容器。\n"
+            "需要重启容器后生效；现在重启吗？（会关闭容器里正在运行的程序）",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if reply == QMessageBox.Yes:
+            self.wine.kill(str(self.current_bottle.path))
+            QMessageBox.information(self, "已重启", "容器会话已结束，下次启动就是新设置。")
 
     def add_dll_override(self):
         """Add a DLL override."""
