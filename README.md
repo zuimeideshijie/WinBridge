@@ -70,18 +70,27 @@ WinBridge 旨在解决这些问题，提供一个**用户友好的图形界面**
 
 ```bash
 curl -fsSL --proto '=https' --tlsv1.2 \
-  https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/install.sh \
+  https://gh-proxy.org/https://raw.githubusercontent.com/zuimeideshijie/WinBridge/apt-repo/install.sh \
   | sudo bash
 ```
 
-如果希望先检查脚本内容再执行：
+Gitee 镜像同源，GitHub 镜像链不通时可用：
 
 ```bash
 curl -fsSL --proto '=https' --tlsv1.2 \
   https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/install.sh \
-  -o /tmp/winbridge-install.sh
-less /tmp/winbridge-install.sh
-sudo bash /tmp/winbridge-install.sh
+  | sudo bash
+```
+
+如果希望先检查脚本内容再执行，把上面的地址换成 `-o /tmp/winbridge-install.sh`，
+`less` 看一眼再 `sudo bash /tmp/winbridge-install.sh`。
+
+脚本会按 `gh-proxy.org → v6.gh-proxy.org → gh-proxy.com → ghproxy.net →
+GitHub 直连 → Gitee` 的顺序找第一个已同步的源，只刷新自己那一个源；
+想先看哪个镜像可用，可以加 `--check`：
+
+```bash
+bash install.sh --check
 ```
 
 > 当前 APT 源为未签名测试源，脚本会使用 `[trusted=yes]`。Gitee 仓库名是
@@ -105,8 +114,8 @@ sudo apt install winbridge
 ```
 
 > 仓库用「扁平」布局（只依赖根目录的 `Packages`）。旧写法
-> `…/raw/apt-repo/ stable main` 依赖 `Release` 校验，而 Gitee 的 raw CDN
-> 按文件缓存，发布后容易出现 `Release` 与 `Packages` 不同步、报
+> `…/raw/apt-repo/ stable main` 依赖 `Release` 校验，而 Gitee/GitHub 的 raw
+> CDN 按文件缓存，发布后容易出现 `Release` 与 `Packages` 不同步、报
 > `Hash 校验和不符`，请改用上面这条。
 
 **安装 / 管理 Wine**
