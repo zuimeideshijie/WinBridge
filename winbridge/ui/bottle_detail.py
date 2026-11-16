@@ -409,7 +409,7 @@ class BottleDetailWidget(QWidget):
         shortcuts_layout.addWidget(self.shortcuts_list)
 
         shortcuts_hint = QLabel(
-            "双击运行 · 右键可打开、重命名、添加到桌面、删除或卸载")
+            "双击运行 · 右键可打开、启动参数、重命名、添加到桌面、删除或卸载")
         shortcuts_hint.setObjectName("hint")
 
         footer = QHBoxLayout()
@@ -629,6 +629,53 @@ class BottleDetailWidget(QWidget):
         env_layout.addWidget(btn_apply_env)
         env_layout.addStretch()
         section_layout.addLayout(env_layout)
+
+        # Separator
+        sep3 = QFrame()
+        sep3.setFrameShape(QFrame.HLine)
+        sep3.setObjectName("detailSep")
+        section_layout.addWidget(sep3)
+
+        # Window section
+        window_header = QLabel("窗口")
+        window_header.setObjectName("sectionTitle")
+        section_layout.addWidget(window_header)
+
+        self.decorated_check = QCheckBox("允许窗口管理器绘制标题栏")
+        self.decorated_check.setChecked(True)
+        self.decorated_check.setToolTip(
+            "关掉后 Wine 窗口没有标题栏。有些自带标题栏的程序（火狐的标签页"
+            "放标题栏、Electron 应用）在 Wine 下点击位置会比画面偏上，"
+            "可以用这个开关验证或绕过。")
+        section_layout.addWidget(self.decorated_check)
+
+        vdesk_row = QHBoxLayout()
+        vdesk_row.setSpacing(8)
+        self.virtual_desktop_check = QCheckBox("模拟虚拟桌面")
+        self.virtual_desktop_check.setToolTip(
+            "所有程序都画在一个 Wine 顶层窗口里，窗口坐标只算一次；"
+            "桌面程序出现点击错位时可以试。")
+        self.virtual_desktop_check.toggled.connect(
+            self._on_virtual_desktop_toggled)
+        vdesk_row.addWidget(self.virtual_desktop_check)
+        self.virtual_desktop_size = QLineEdit()
+        self.virtual_desktop_size.setFixedWidth(120)
+        self.virtual_desktop_size.setPlaceholderText("1920x1080")
+        self.virtual_desktop_size.setEnabled(False)
+        vdesk_row.addWidget(self.virtual_desktop_size)
+        vdesk_row.addStretch()
+        section_layout.addLayout(vdesk_row)
+
+        window_apply_row = QHBoxLayout()
+        window_apply_row.setSpacing(8)
+        btn_apply_window = QPushButton("应用")
+        btn_apply_window.setObjectName("btnDefault")
+        btn_apply_window.clicked.connect(self.apply_window_options)
+        window_apply_row.addWidget(btn_apply_window)
+        window_hint = QLabel("修改后重新启动容器里的程序才生效")
+        window_hint.setObjectName("hint")
+        window_apply_row.addWidget(window_hint, 1)
+        section_layout.addLayout(window_apply_row)
 
         layout.addWidget(section)
         layout.addStretch()
@@ -1418,6 +1465,8 @@ class BottleDetailWidget(QWidget):
         if idx >= 0:
             self.env_combo.setCurrentIndex(idx)
 
+        self._sync_window_options()
+
         # DLL overrides
         self._load_dll_overrides()
 
@@ -1493,11 +1542,13 @@ class BottleDetailWidget(QWidget):
             has_icon = bool(icon_path) and Path(icon_path).exists()
             item.setIcon(QIcon(icon_path) if has_icon else fallback)
             item.setSizeHint(QSize(0, 36))
+            args = [str(arg) for arg in (entry.get("args") or [])]
+            detail = ("\n启动参数：" + shlex.join(args)) if args else ""
             if Path(target).exists():
-                item.setToolTip(target)
+                item.setToolTip(target + detail)
             else:
                 item.setForeground(muted)
-                item.setToolTip(f"文件不存在：{target}")
+                item.setToolTip(f"文件不存在：{target}{detail}")
             self.shortcuts_list.addItem(item)
             self._shortcut_items[target] = item
 
@@ -1544,6 +1595,8 @@ class BottleDetailWidget(QWidget):
         menu = QMenu(self.shortcuts_list)
         action_open = menu.addAction("打开")
         action_folder = menu.addAction("打开程序所在目录")
+        action_args = menu.addAction("启动参数…")
+        action_args.setToolTip("固定给这个程序附加命令行参数，双击启动时自动带上")
         action_rename = menu.addAction("重命名")
         action_desktop = menu.addAction("添加到桌面")
         menu.addSeparator()
@@ -1557,6 +1610,8 @@ class BottleDetailWidget(QWidget):
             self._run_shortcut(item)
         elif chosen is action_folder:
             self._open_shortcut_folder(item)
+        elif chosen is action_args:
+            self._edit_shortcut_args(item)
         elif chosen is action_rename:
             self._rename_shortcut(item)
         elif chosen is action_desktop:
@@ -1743,6 +1798,29 @@ class BottleDetailWidget(QWidget):
             if self.current_bottle.rename_shortcut(target, new_name):
                 item.setText(new_name)
 
+    def _edit_shortcut_args(self, item):
+        """Remember command-line arguments for one shortcut."""
+        target = item.data(Qt.UserRole)
+        if not target or not self.current_bottle:
+            return
+        from PyQt5.QtWidgets import QInputDialog
+        current = shlex.join(self.current_bottle.shortcut_args(target))
+        text, ok = QInputDialog.getText(
+            self, "启动参数",
+            f"「{item.text()}」的启动参数（空格分隔，含空格的用引号括起）:",
+            QLineEdit.Normal, current)
+        if not ok:
+            return
+        try:
+            args = shlex.split(text.strip())
+        except ValueError as error:
+            QMessageBox.warning(self, "参数格式错误", str(error))
+            return
+        if not self.current_bottle.set_shortcut_args(target, args):
+            QMessageBox.warning(self, "保存失败", "这个快捷方式已不在列表里。")
+            return
+        self._load_shortcuts()
+
     def _shortcut_to_desktop(self, item):
         """Write a .desktop launcher for this program on the Linux desktop."""
         target = item.data(Qt.UserRole)
@@ -1807,7 +1885,7 @@ class BottleDetailWidget(QWidget):
                 self.current_bottle.forget_shortcut(target)
                 self._load_shortcuts()
             return
-        self.current_bottle.run(target)
+        self.current_bottle.launch_shortcut(target)
 
     def save_description(self):
         """Save the bottle description."""
@@ -2003,6 +2081,49 @@ class BottleDetailWidget(QWidget):
             self.bottle_updated.emit(self.current_bottle.name)
             self._update_info_card(self.card_env, "环境",
                                    environment_label(env))
+
+    def _default_desktop_size(self) -> str:
+        """Virtual desktop size to prefill: the current screen's work area."""
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return "1920x1080"
+        size = screen.availableGeometry().size()
+        return f"{size.width()}x{size.height()}"
+
+    def _on_virtual_desktop_toggled(self, checked: bool):
+        self.virtual_desktop_size.setEnabled(checked)
+        if checked and not self.virtual_desktop_size.text().strip():
+            self.virtual_desktop_size.setText(self._default_desktop_size())
+
+    def _sync_window_options(self):
+        """Show the two window switches as the bottle's registry has them."""
+        if not self.current_bottle:
+            return
+        bottle = self.current_bottle
+        self.decorated_check.setChecked(bottle.window_decorated)
+        size = bottle.virtual_desktop
+        self.virtual_desktop_size.setText(size or self._default_desktop_size())
+        self.virtual_desktop_check.setChecked(bool(size))
+        self.virtual_desktop_size.setEnabled(bool(size))
+
+    def apply_window_options(self):
+        """Write "Decorated" and the virtual desktop size into the bottle."""
+        if not self.current_bottle:
+            return
+        errors = []
+        ok, error = self.current_bottle.set_window_decorated(
+            self.decorated_check.isChecked())
+        if not ok:
+            errors.append(f"窗口装饰：{error}")
+        size = (self.virtual_desktop_size.text().strip()
+                if self.virtual_desktop_check.isChecked() else "")
+        ok, error = self.current_bottle.set_virtual_desktop(size)
+        if not ok:
+            errors.append(f"虚拟桌面：{error}")
+        if errors:
+            QMessageBox.warning(self, "应用失败", "\n".join(errors))
+            return
+        self.bottle_updated.emit(self.current_bottle.name)
 
     def add_dll_override(self):
         """Add a DLL override."""

@@ -105,6 +105,24 @@ def wine_root(wine_path: str) -> Optional[Path]:
     return root
 
 
+def _wineserver_dir() -> Path:
+    """Directory Wine keeps its per-prefix server sockets in.
+
+    Wine names that directory after the uid only (`/tmp/.wine-<uid>`) and
+    looks for the existing server there. Every flatpak sandbox gets a private
+    /tmp, so without mounting this one directory a second sandbox starts a
+    *second* wineserver for the same prefix. That is what hung wine's own
+    taskmgr: it ran in a fresh sandbox while another wineserver held the
+    prefix. The mount has to exist before flatpak starts, hence the mkdir.
+    """
+    path = Path("/tmp") / f".wine-{os.getuid()}"
+    try:
+        path.mkdir(mode=0o700, exist_ok=True)
+    except OSError:
+        pass
+    return path
+
+
 def _graphics_env() -> Dict[str, str]:
     """Environment that points Mesa at the sandbox's own drivers."""
     dri_dirs: List[str] = []
@@ -142,6 +160,10 @@ class SandboxRuntime:
 
     def _fs_args(self, wine_path: str) -> List[str]:
         args = ["--filesystem=home"]
+        # Share the wineserver socket dir, not the whole /tmp: one wineserver
+        # per prefix is what keeps a second sandboxed launch from deadlocking
+        # on the registry/prefix the first one holds.
+        args.append(f"--filesystem={_wineserver_dir()}")
         root = wine_root(wine_path)
         if root is not None:
             args.append(f"--filesystem={root}:ro")

@@ -78,6 +78,16 @@ class SandboxCommandTests(unittest.TestCase):
         self.assertIn("/opt/wine-stable/bin/wine", script)
         self.assertNotIn("/usr/bin/wine run.exe", script)
 
+    def test_mounts_shared_wineserver_dir(self):
+        """Every sandbox must see one wineserver dir, or one prefix gets two."""
+        cmd = self.runtime.command(["/opt/wine-stable/bin/wine", "run.exe"],
+                                   "/opt/wine-stable/bin/wine", {})
+        expected = f"--filesystem=/tmp/.wine-{os.getuid()}"
+        self.assertIn(expected, cmd)
+        self.assertTrue(Path(f"/tmp/.wine-{os.getuid()}").is_dir())
+        # Narrow mount: /tmp itself stays private to the sandbox.
+        self.assertNotIn("--filesystem=/tmp", cmd)
+
     def test_graphics_env_points_at_sandbox_mesa(self):
         with mock.patch.object(sandbox.os.path, "realpath",
                                return_value="/opt/wine-stable/bin/wine"):

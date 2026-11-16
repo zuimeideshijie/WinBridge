@@ -78,7 +78,7 @@ _SEGMENT_MIN_PIECE = 1 * 1024 * 1024
 def _open_url(url: str, timeout: int, method: str = None,
               headers: dict = None):
     """urlopen wrapper: MS hosts skip cert verification, others don't."""
-    request_headers = {"User-Agent": "WinBridge/1.3"}
+    request_headers = {"User-Agent": "WinBridge/1.3.1"}
     request_headers.update(headers or {})
     request = urllib.request.Request(url, headers=request_headers, method=method)
     host = (urllib.parse.urlsplit(url).hostname or "").lower()
@@ -409,6 +409,30 @@ class ComponentManager:
         self._winetricks_path = self._find_winetricks()
         # Mirror prefix that last worked for a GitHub download (None = direct)
         self._github_mirror = None
+
+    def _preset_dirs(self) -> list:
+        """Component directories holding pre-downloaded winetricks payloads.
+
+        Both the current "winetricks" and the legacy "winetricks-cache" names
+        are accepted (see ``Config.PRESET_DIR_NAMES``); an old tree otherwise
+        looks like it has no presets at all.
+        """
+        names = getattr(self.config, "PRESET_DIR_NAMES",
+                        Config.PRESET_DIR_NAMES)
+        roots = []
+        for name in names:
+            candidate = Path(self.config.components_dir) / name
+            if candidate.is_dir():
+                roots.append(candidate)
+        return roots
+
+    def _payload_dirs(self) -> list:
+        """Every directory a payload may already sit in (presets + cache)."""
+        roots = list(self._preset_dirs())
+        cache = Path(self.config.cache_dir) / "winetricks"
+        if cache.is_dir() and cache not in roots:
+            roots.append(cache)
+        return roots
 
     def _wine_for_bottle(self, bottle_path: str):
         """The Wine binary this bottle is actually configured to use.
@@ -1837,27 +1861,35 @@ class ComponentManager:
         fonts_dir = Path(bottle_path) / "drive_c" / "windows" / "Fonts"
         fonts_dir.mkdir(parents=True, exist_ok=True)
 
-        cache_root = self.config.components_dir / "winetricks"
-        if not cache_root.exists():
-            return False, f"缓存目录不存在: {cache_root}", {}, []
+        cache_roots = self._payload_dirs()
+        if not cache_roots:
+            friendly = " / ".join(
+                str(Path(self.config.components_dir) / name)
+                for name in getattr(self.config, "PRESET_DIR_NAMES",
+                                    Config.PRESET_DIR_NAMES))
+            return False, (
+                f"没有找到预置字体缓存：{friendly}\n"
+                "可先安装 Core Fonts / CJK Fonts 组件，或把预置包放到上述目录。"
+            ), {}, []
 
         total = 0
         # Walk all subdirectories (calibri/, cambria/, corefonts/, etc.)
-        for pkg_dir in cache_root.iterdir():
-            if not pkg_dir.is_dir():
-                continue
-            for font_file in pkg_dir.iterdir():
-                if not font_file.is_file():
+        for cache_root in cache_roots:
+            for pkg_dir in cache_root.iterdir():
+                if not pkg_dir.is_dir():
                     continue
-                ext = font_file.suffix.lower()
-                if ext not in (".ttf", ".ttc", ".otf"):
-                    continue
-                dst = fonts_dir / font_file.name
-                try:
-                    shutil.copy2(str(font_file), str(dst))
-                    total += 1
-                except OSError:
-                    continue
+                for font_file in pkg_dir.iterdir():
+                    if not font_file.is_file():
+                        continue
+                    ext = font_file.suffix.lower()
+                    if ext not in (".ttf", ".ttc", ".otf"):
+                        continue
+                    dst = fonts_dir / font_file.name
+                    try:
+                        shutil.copy2(str(font_file), str(dst))
+                        total += 1
+                    except OSError:
+                        continue
 
         if progress_callback:
             progress_callback(80, 100, f"正在注册字体到 Wine 注册表...")
@@ -1919,10 +1951,13 @@ class ComponentManager:
         spec = info.get("msi_assets")
         if not spec:
             return False, []
-        preset_msi = (self.config.components_dir / "winetricks"
-                      / spec["cache_dir"] / spec["file"])
-        cache_msi = (self.config.cache_dir / "winetricks"
+        cache_msi = (Path(self.config.cache_dir) / "winetricks"
                      / spec["cache_dir"] / spec["file"])
+        preset_msi = next(
+            (root / spec["cache_dir"] / spec["file"]
+             for root in self._preset_dirs()
+             if (root / spec["cache_dir"] / spec["file"]).exists()),
+            cache_msi)
         msi_path = cache_msi if cache_msi.exists() else preset_msi
         if not msi_path.exists():
             msi_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2082,8 +2117,14 @@ class ComponentManager:
             # e.g. msxml3 needs win7sp1's windows6.1-KB976932-X64.exe — if we
             # don't link it, winetricks re-downloads it (947MB) and a partial
             # download (e.g. 853MB) breaks cabextract with a silent failure.
-            preset_root = self.config.components_dir / "winetricks"
-            if preset_root.exists():
+            preset_roots = self._preset_dirs()
+            if not preset_roots and progress_callback:
+                # No presets at all: everything comes off the network, which
+                # is exactly where the big payloads (win7sp1, dotnet48) fail
+                # on a slow link. Say so instead of looking like a hang.
+                progress_callback(
+                    2, 100, "未找到预置缓存，本次安装将联网下载全部文件（较慢）")
+            for preset_root in preset_roots:
                 try:
                     for pkg_dir in preset_root.iterdir():
                         if not pkg_dir.is_dir():

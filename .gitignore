@@ -30,3 +30,6 @@ WinBridge-x86_64.flatpak
 
 # Debian package output (build-deb.sh writes here, artifacts stay local)
 debian/
+
+# APT repository output (published to the apt-repo branch, not main)
+apt-repo/

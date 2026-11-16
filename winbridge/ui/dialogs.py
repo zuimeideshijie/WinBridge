@@ -1170,11 +1170,6 @@ class TaskManagerDialog(QDialog):
         self.btn_end.setEnabled(False)
         bottom.addWidget(self.btn_end)
 
-        self.btn_open_taskmgr = QPushButton("Wine 任务管理器")
-        self.btn_open_taskmgr.setObjectName("btnDefault")
-        self.btn_open_taskmgr.clicked.connect(self.open_wine_taskmgr)
-        bottom.addWidget(self.btn_open_taskmgr)
-
         self.btn_refresh = QPushButton("刷新")
         self.btn_refresh.setObjectName("btnDefault")
         self.btn_refresh.clicked.connect(self.refresh_processes)
@@ -1255,17 +1250,6 @@ class TaskManagerDialog(QDialog):
                 self.refresh_processes()
             else:
                 QMessageBox.warning(self, "错误", f"无法结束进程 {pid}")
-
-    def open_wine_taskmgr(self):
-        """Open Wine's own task manager in this bottle (sandbox aware)."""
-        try:
-            if self.bottle_path:
-                self.wine.run(self.bottle_path, "taskmgr", wait=False)
-                return
-            subprocess.Popen([self.wine.wine_path, "taskmgr"],
-                             env=os.environ.copy())
-        except Exception as error:  # noqa: BLE001 - surfaced in the dialog
-            QMessageBox.warning(self, "无法启动", str(error))
 
     def closeEvent(self, event):
         self.timer.stop()

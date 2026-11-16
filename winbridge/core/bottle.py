@@ -1,14 +1,22 @@
 """Bottle (Wine prefix) management."""
 
 import json
+import re
+import shlex
 import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict
 
+from . import registry
 from .config import Config
 from .sandbox import forget_prefix_cache
 from .wine import Wine
+
+# HKCU keys behind the two window switches. Values use single backslashes,
+# the form Wine's own `reg` command expects.
+X11_DRIVER_KEY = r"Software\Wine\X11 Driver"
+DESKTOPS_KEY = r"Software\Wine\Explorer\Desktops"
 
 # Environment type → display label (shared by every view showing a bottle)
 ENVIRONMENT_LABELS = {
@@ -286,6 +294,107 @@ class Bottle:
                 self.shortcuts = items
                 return True
         return False
+
+    def shortcut_args(self, target: str) -> List[str]:
+        """Launch arguments remembered for one shortcut (empty when unset)."""
+        for item in self.shortcuts:
+            if item.get("target") == target:
+                return [str(arg) for arg in (item.get("args") or [])]
+        return []
+
+    def set_shortcut_args(self, target: str, args: List[str]) -> bool:
+        """Persist launch arguments for one shortcut.
+
+        Stored as a list so quoting survives a save/load round trip; an empty
+        list drops the key entirely, keeping bottle.json tidy.
+        """
+        items = self.shortcuts
+        for item in items:
+            if item.get("target") == target:
+                cleaned = [str(arg) for arg in (args or []) if str(arg)]
+                if cleaned:
+                    item["args"] = cleaned
+                else:
+                    item.pop("args", None)
+                self.shortcuts = items
+                return True
+        return False
+
+    def launch_shortcut(self, target: str) -> bool:
+        """Run a shortcut with the arguments it remembers."""
+        return self.run(target, self.shortcut_args(target) or None)
+
+    # ------------------------------------------------------------------
+    # window options (winecfg's "Decorated" / "virtual desktop")
+    # ------------------------------------------------------------------
+    def _hkcu_value(self, key: str, name: str) -> str:
+        """Read one HKCU value straight out of user.reg.
+
+        Avoids spawning Wine just to paint a checkbox. The flip side is that a
+        value written a moment ago may still only live in the running
+        wineserver's memory, so callers should trust their own last write.
+        """
+        reg_file = self.path / "user.reg"
+        if not reg_file.exists():
+            return ""
+        try:
+            text = reg_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        tree_path = "HKCU" + registry.SEP + key.replace("\\", registry.SEP)
+        for entry in registry.parse_values(text, tree_path):
+            if entry.get("name") == name:
+                return entry.get("data", "")
+        return ""
+
+    def _run_reg(self, command: str) -> tuple:
+        """Run one ``reg`` command inside this bottle."""
+        try:
+            result = self.wine.run_cmd(str(self.path), command, timeout=60)
+        except Exception as error:  # noqa: BLE001 - shown to the user
+            return False, str(error)
+        if result.returncode == 0:
+            return True, ""
+        return False, (result.stderr or result.stdout
+                       or "wine reg 返回非零").strip()[:300]
+
+    def _set_hkcu_value(self, key: str, name: str, data: str) -> tuple:
+        return self._run_reg(
+            f"reg add {shlex.quote(key)} /v {shlex.quote(name)} "
+            f"/t REG_SZ /d {shlex.quote(data)} /f")
+
+    def _delete_hkcu_value(self, key: str, name: str) -> tuple:
+        ok, error = self._run_reg(
+            f"reg delete {shlex.quote(key)} /v {shlex.quote(name)} /f")
+        if ok or not self._hkcu_value(key, name):
+            # Wine errors out when the value isn't there; already-off is fine.
+            return True, ""
+        return False, error
+
+    @property
+    def window_decorated(self) -> bool:
+        """Whether the window manager draws the titlebar (Wine default: yes)."""
+        value = (self._hkcu_value(X11_DRIVER_KEY, "Decorated") or "Y").strip()
+        return value.upper() != "N"
+
+    def set_window_decorated(self, enabled: bool) -> tuple:
+        """Turn WM titlebars on/off for this bottle (`Decorated`)."""
+        return self._set_hkcu_value(X11_DRIVER_KEY, "Decorated",
+                                    "Y" if enabled else "N")
+
+    @property
+    def virtual_desktop(self) -> str:
+        """Virtual desktop size such as "1920x1080"; empty when disabled."""
+        return (self._hkcu_value(DESKTOPS_KEY, "Default") or "").strip()
+
+    def set_virtual_desktop(self, size: str) -> tuple:
+        """Enable (``WxH``) or disable the virtual desktop for this bottle."""
+        size = (size or "").strip().lower().replace("×", "x")
+        if not size:
+            return self._delete_hkcu_value(DESKTOPS_KEY, "Default")
+        if not re.fullmatch(r"\d{3,5}x\d{3,5}", size):
+            return False, "虚拟桌面尺寸格式应为 宽x高，例如 1920x1080。"
+        return self._set_hkcu_value(DESKTOPS_KEY, "Default", size)
 
     @property
     def dll_overrides(self) -> Dict[str, str]:

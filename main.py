@@ -101,7 +101,8 @@ def _launch_and_exit(config, bottle_name: str, target: str):
     if not os.path.exists(target):
         print(f"程序不存在: {target}", file=sys.stderr)
         return 3
-    bottle.run(target)
+    # Desktop shortcuts must use the same stored arguments as the GUI.
+    bottle.launch_shortcut(target)
     return 0
 
 
@@ -112,7 +113,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("WinBridge")
-    app.setApplicationVersion("1.3")
+    app.setApplicationVersion("1.3.1")
     app.setOrganizationName("WinBridge")
 
     # Initialize theme
