@@ -216,6 +216,30 @@ Description: Wine bottle manager with a modern Qt interface
 
 Package: winbridge
 Architecture: all
+Version: 1.3.4
+Priority: optional
+Section: utils
+Maintainer: zuimeideshijie <zuimeideshijie@zuimeideshijie.zuimeideshijie.com>
+Installed-Size: 4004
+Depends: python3 (>= 3.8), python3-pyqt5, cabextract, p7zip-full, curl, zstd, xdg-utils
+Recommends: wine | wine64 | wine-stable, imagemagick, glib2.0-bin, desktop-file-utils
+Filename: pool/main/winbridge_1.3.4_all.deb
+Size: 434880
+MD5sum: 22e43062cfb8694a6876889618991b87
+SHA1: 63efea9baeb182b12f48e8f4723e76a52326c254
+SHA256: ef10dfe3583260f91887320d112cfa5524715ce5ff2b2129d6382f831b8690b8
+SHA512: 5b858aa06b14eca0a6fde43f3253f74103925392aebc4d634b2a6138b0c613bbde5ae141a2a5e48e2843584ef0e4cd7d855f1e5003f850fd784885c71558a66d
+Homepage: https://gitcode.com/2503_90323139/WinBridge
+Description: Wine bottle manager with a modern Qt interface
+ WinBridge creates and manages Wine prefixes (bottles), installs common
+ Windows components (vcrun, dotnet, DXVK, VKD3D, FAudio, fonts) and launches
+ Windows applications from a per-bottle shortcut list.
+ .
+ Downloads are routed through GitHub mirrors by default and Microsoft
+ redistributables are fetched directly.
+
+Package: winbridge
+Architecture: all
 Version: 1.3
 Priority: optional
 Section: utils
