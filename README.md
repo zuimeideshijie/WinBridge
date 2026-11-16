@@ -70,24 +70,24 @@ WinBridge 旨在解决这些问题，提供一个**用户友好的图形界面**
 
 ```bash
 curl -fsSL --proto '=https' --tlsv1.2 \
-  https://gh-proxy.org/https://raw.githubusercontent.com/zuimeideshijie/WinBridge/apt-repo/install.sh \
+  https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/install.sh \
   | sudo bash
 ```
 
-Gitee 镜像同源，GitHub 镜像链不通时可用：
+GitHub 镜像（gh-proxy 链）内容同源，Gitee 取不到时可用：
 
 ```bash
 curl -fsSL --proto '=https' --tlsv1.2 \
-  https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/install.sh \
+  https://gh-proxy.org/https://raw.githubusercontent.com/zuimeideshijie/WinBridge/apt-repo/install.sh \
   | sudo bash
 ```
 
 如果希望先检查脚本内容再执行，把上面的地址换成 `-o /tmp/winbridge-install.sh`，
 `less` 看一眼再 `sudo bash /tmp/winbridge-install.sh`。
 
-脚本会按 `gh-proxy.org → v6.gh-proxy.org → gh-proxy.com → ghproxy.net →
-GitHub 直连 → Gitee` 的顺序找第一个已同步的源，只刷新自己那一个源；
-想先看哪个镜像可用，可以加 `--check`：
+脚本默认用 Gitee；取不到时按 `gh-proxy.org → v6.gh-proxy.org → gh-proxy.com →
+ghproxy.net → GitHub 直连` 的顺序再找，用第一个已同步的源，只刷新自己那一个源。
+想先看哪个源可用，可以加 `--check`：
 
 ```bash
 bash install.sh --check
