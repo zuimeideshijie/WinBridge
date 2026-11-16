@@ -188,23 +188,57 @@ fi
 printf '%s\n' "$SOURCE_LINE" | $SUDO tee "$SOURCE_FILE" >/dev/null
 log "已写入源: $SOURCE_FILE"
 
+# Drop this source's cached lists first: a list poisoned by an older
+# Release/Packages pair would otherwise be reused even after the repo changed.
+$SUDO find /var/lib/apt/lists -maxdepth 1 -name '*winbridge*' -delete 2>/dev/null || true
+
 # Only refresh this source; unrelated third-party repos should not break the
 # installer.
 log "更新 APT 索引..."
+INDEX_OK=1
 if ! $SUDO apt-get update \
         -o Dir::Etc::sourcelist="$SOURCE_FILE" \
         -o Dir::Etc::sourceparts="-" \
         -o APT::Get::List-Cleanup="0" \
         -o Acquire::http::No-Cache=true \
         -o Acquire::https::No-Cache=true; then
-    die "apt-get update 失败，请检查网络、代理或 $SOURCE_FILE"
+    INDEX_OK=0
+    warn "APT 索引刷新失败（镜像端的 Release/Packages 可能还没同步）"
 fi
 
 # ---- install -------------------------------------------------------------
-log "安装/升级 winbridge..."
-if ! $SUDO env DEBIAN_FRONTEND=noninteractive \
-        apt-get install -y winbridge; then
-    die "apt-get install winbridge 失败"
+if [ "$INDEX_OK" = "1" ]; then
+    log "安装/升级 winbridge..."
+    if ! $SUDO env DEBIAN_FRONTEND=noninteractive \
+            apt-get install -y winbridge; then
+        warn "apt 安装失败，改用直接下载 deb"
+        INDEX_OK=0
+    fi
+fi
+
+if [ "$INDEX_OK" = "0" ]; then
+    # Bypass the repository index entirely: read Filename from the flat
+    # Packages we already downloaded and hand the .deb straight to apt. A
+    # local .deb is never checked against Release, so a stale Release on any
+    # mirror cannot block the install.
+    # Packages is ordered oldest-first, so pick the highest version instead of
+    # the first stanza (that would install 1.2.0).
+    DEB_REL=$(awk '
+        /^Package: /  { pkg = $2 }
+        /^Version: /  { ver = $2 }
+        /^Filename: / { if (pkg == "winbridge") print ver " " $2 }
+    ' "$TMP_DIR/Packages" | sort -V | tail -n 1 | awk '{print $2}')
+    [ -n "$DEB_REL" ] || die "Packages 里没有 winbridge 的 Filename 字段"
+    DEB_FILE="$TMP_DIR/winbridge.deb"
+    log "直接下载: $BASE_URL/$DEB_REL"
+    download "$BASE_URL/$DEB_REL" "$DEB_FILE" \
+        || die "无法下载 $BASE_URL/$DEB_REL"
+    dpkg-deb -I "$DEB_FILE" >/dev/null 2>&1 \
+        || die "下载到的文件不是有效的 deb 包"
+    log "安装本地 deb（跳过索引校验）..."
+    $SUDO env DEBIAN_FRONTEND=noninteractive \
+        apt-get install -y "$DEB_FILE" \
+        || die "安装 $DEB_FILE 失败"
 fi
 
 # ---- verify --------------------------------------------------------------
