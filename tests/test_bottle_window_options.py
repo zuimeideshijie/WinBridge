@@ -89,8 +89,8 @@ class WindowOptionTests(unittest.TestCase):
         ok, error = self.bottle.set_window_decorated(False)
         self.assertTrue(ok, error)
         self.assertEqual(self.commands,
-                         ["reg add 'Software\\Wine\\X11 Driver' /v Decorated "
-                          "/t REG_SZ /d N /f"])
+                         ["reg add 'HKCU\\Software\\Wine\\X11 Driver' "
+                          "/v Decorated /t REG_SZ /d N /f"])
 
     def test_virtual_desktop_defaults_to_off(self):
         self.assertEqual(self.bottle.virtual_desktop, "")
@@ -105,8 +105,8 @@ class WindowOptionTests(unittest.TestCase):
         self.assertTrue(ok, error)
         self.assertEqual(
             self.commands,
-            ["reg add 'Software\\Wine\\Explorer\\Desktops' /v Default "
-             "/t REG_SZ /d 1920x1080 /f"])
+            ["reg add 'HKCU\\Software\\Wine\\Explorer\\Desktops' "
+             "/v Default /t REG_SZ /d 1920x1080 /f"])
 
     def test_fullwidth_multiply_sign_is_accepted(self):
         ok, _error = self.bottle.set_virtual_desktop("1920×1080")
@@ -126,7 +126,8 @@ class WindowOptionTests(unittest.TestCase):
         self.assertTrue(ok, error)
         self.assertEqual(
             self.commands,
-            ["reg delete 'Software\\Wine\\Explorer\\Desktops' /v Default /f"])
+            ["reg delete 'HKCU\\Software\\Wine\\Explorer\\Desktops' "
+             "/v Default /f"])
 
 
 if __name__ == "__main__":

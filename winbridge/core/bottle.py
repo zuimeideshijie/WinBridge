@@ -350,22 +350,37 @@ class Bottle:
     def _run_reg(self, command: str) -> tuple:
         """Run one ``reg`` command inside this bottle."""
         try:
-            result = self.wine.run_cmd(str(self.path), command, timeout=60)
+            result = self.wine.run_cmd(str(self.path), command, timeout=60,
+                                       env={"WINEDEBUG": "-all"})
         except Exception as error:  # noqa: BLE001 - shown to the user
             return False, str(error)
         if result.returncode == 0:
             return True, ""
-        return False, (result.stderr or result.stdout
-                       or "wine reg 返回非零").strip()[:300]
+        lines = [line.strip() for line in
+                 (result.stderr or result.stdout or "").splitlines()
+                 if line.strip()]
+        # Wine prints its own chatter ("wineserver: using server-side
+        # synchronization.", lsteamclient fixmes); the real complaint is the
+        # line reg itself writes.
+        message = next((line for line in reversed(lines)
+                        if line.lower().startswith("reg:")),
+                       lines[-1] if lines else "")
+        return False, message[:300] or "wine reg 返回非零"
+
+    @staticmethod
+    def _reg_key(key: str) -> str:
+        """Full path for Wine's ``reg``: it needs the hive, the .reg files not."""
+        return key if key.upper().startswith("HKCU\\") else f"HKCU\\{key}"
 
     def _set_hkcu_value(self, key: str, name: str, data: str) -> tuple:
         return self._run_reg(
-            f"reg add {shlex.quote(key)} /v {shlex.quote(name)} "
-            f"/t REG_SZ /d {shlex.quote(data)} /f")
+            f"reg add {shlex.quote(self._reg_key(key))} "
+            f"/v {shlex.quote(name)} /t REG_SZ /d {shlex.quote(data)} /f")
 
     def _delete_hkcu_value(self, key: str, name: str) -> tuple:
         ok, error = self._run_reg(
-            f"reg delete {shlex.quote(key)} /v {shlex.quote(name)} /f")
+            f"reg delete {shlex.quote(self._reg_key(key))} "
+            f"/v {shlex.quote(name)} /f")
         if ok or not self._hkcu_value(key, name):
             # Wine errors out when the value isn't there; already-off is fine.
             return True, ""

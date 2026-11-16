@@ -92,7 +92,7 @@ def _fetch_releases(repo: str, timeout: int = 8,
     for url in _api_urls(repo, per_page):
         try:
             request = urllib.request.Request(
-                url, headers={"User-Agent": "WinBridge/1.3.1"})
+                url, headers={"User-Agent": "WinBridge/1.3.2"})
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 data = json.loads(response.read().decode("utf-8", "replace"))
             if isinstance(data, list):

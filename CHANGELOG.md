@@ -1,5 +1,15 @@
 # 更新日志
 
+## [1.3.2] - 2026-11-16
+
+### 程序与容器
+
+- **修复配置页「窗口」开关点应用必报失败**：写注册表用的 `reg add/delete`
+  少了 `HKCU\` 前缀，Wine 直接回「无效的系统键」，两个开关都没写进容器；
+  错误框里显示的还只是 `wineserver: using server-side synchronization.`、
+  `lsteamclient disabled` 这类噪音。现在补上前缀，并且 `reg` 调用带
+  `WINEDEBUG=-all`、错误只取 `reg:` 开头的那一行
+
 ## [1.3.1] - 2026-11-16
 
 ### 程序与容器
