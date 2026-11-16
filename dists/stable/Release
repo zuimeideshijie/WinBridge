@@ -1,28 +1,28 @@
 Architectures: amd64 i386
 Codename: stable
 Components: main
-Date: Mon, 16 Nov 2026 07:09:35 +0000
+Date: Mon, 16 Nov 2026 08:46:09 +0000
 Description: WinBridge APT repository
 Label: WinBridge
 Origin: WinBridge
 Suite: stable
 MD5Sum:
- 17ef0dbd947cd8ef4335290a4ef80f4d             8018 main/binary-amd64/Packages
- bf4ce07328704f02d0ad1f65f4a49e17             1950 main/binary-amd64/Packages.gz
- 17ef0dbd947cd8ef4335290a4ef80f4d             8018 main/binary-i386/Packages
- bf4ce07328704f02d0ad1f65f4a49e17             1950 main/binary-i386/Packages.gz
+ 6e74d8d738c90259e81bb9b4109944aa             9164 main/binary-amd64/Packages
+ d6a2ef7f8cc88335f6b533c969c79e03             2154 main/binary-amd64/Packages.gz
+ 6e74d8d738c90259e81bb9b4109944aa             9164 main/binary-i386/Packages
+ d6a2ef7f8cc88335f6b533c969c79e03             2154 main/binary-i386/Packages.gz
 SHA1:
- fe3a8dc768a9257a5731907a91b60c0c23d22269             8018 main/binary-amd64/Packages
- fa0a72c899c41494865cb5b070ab07f246e4b2a5             1950 main/binary-amd64/Packages.gz
- fe3a8dc768a9257a5731907a91b60c0c23d22269             8018 main/binary-i386/Packages
- fa0a72c899c41494865cb5b070ab07f246e4b2a5             1950 main/binary-i386/Packages.gz
+ 30826859a47ed08499e331c9a925fb6e391801ed             9164 main/binary-amd64/Packages
+ b5867f61cd1ca854806b5c9a17426ab8034ce600             2154 main/binary-amd64/Packages.gz
+ 30826859a47ed08499e331c9a925fb6e391801ed             9164 main/binary-i386/Packages
+ b5867f61cd1ca854806b5c9a17426ab8034ce600             2154 main/binary-i386/Packages.gz
 SHA256:
- 3443495b9fb395fa1b506c23081b287208ead8162ef84847e122c7fb7d45ca43             8018 main/binary-amd64/Packages
- 8f26ce3243ec353c4281cff96deb1f9f6d0d9132f2bb3d46f6d633ee31262cda             1950 main/binary-amd64/Packages.gz
- 3443495b9fb395fa1b506c23081b287208ead8162ef84847e122c7fb7d45ca43             8018 main/binary-i386/Packages
- 8f26ce3243ec353c4281cff96deb1f9f6d0d9132f2bb3d46f6d633ee31262cda             1950 main/binary-i386/Packages.gz
+ 97f5c26665ddf67a39044f5c35099fe9044d06b459023fcfd31da13116645981             9164 main/binary-amd64/Packages
+ 85d3c8b795daf2efc7b70fc3fe1a205ffb5d20d532957709e23650e7e9cd1b25             2154 main/binary-amd64/Packages.gz
+ 97f5c26665ddf67a39044f5c35099fe9044d06b459023fcfd31da13116645981             9164 main/binary-i386/Packages
+ 85d3c8b795daf2efc7b70fc3fe1a205ffb5d20d532957709e23650e7e9cd1b25             2154 main/binary-i386/Packages.gz
 SHA512:
- 96c50e59367ff767e813bce1fd19ec63627319696372bf70760e2cee66b4bde8245191460ce34cae8b47bf461c087d03a5c200327c0aa8dcdd3762bf430569b9             8018 main/binary-amd64/Packages
- 20cb982933b03853b3cf6386a94eb9c25ee7209f7d0cf45f97fbe9ab0446ba9c731a15e8904ddb23a3a497b55ed0a670ba6379555bacfac75580c5ea40071d61             1950 main/binary-amd64/Packages.gz
- 96c50e59367ff767e813bce1fd19ec63627319696372bf70760e2cee66b4bde8245191460ce34cae8b47bf461c087d03a5c200327c0aa8dcdd3762bf430569b9             8018 main/binary-i386/Packages
- 20cb982933b03853b3cf6386a94eb9c25ee7209f7d0cf45f97fbe9ab0446ba9c731a15e8904ddb23a3a497b55ed0a670ba6379555bacfac75580c5ea40071d61             1950 main/binary-i386/Packages.gz
+ 8c6d282555a053f0358230368475b3d45cb5bcabefe70b95f0b6fc2566a00e7277289309ce6c0ea98526781511720a4f73501ae27d9a65582ee8126917ac6394             9164 main/binary-amd64/Packages
+ 7ee2e2623c5a2e0823f5dd42f4da425c2ea6b49c5e012d5e0508925e1453649412d8ddd3e679bed07eb5d19010849eea3e4c0ae25eb57a98ce8c6436a82dac5a             2154 main/binary-amd64/Packages.gz
+ 8c6d282555a053f0358230368475b3d45cb5bcabefe70b95f0b6fc2566a00e7277289309ce6c0ea98526781511720a4f73501ae27d9a65582ee8126917ac6394             9164 main/binary-i386/Packages
+ 7ee2e2623c5a2e0823f5dd42f4da425c2ea6b49c5e012d5e0508925e1453649412d8ddd3e679bed07eb5d19010849eea3e4c0ae25eb57a98ce8c6436a82dac5a             2154 main/binary-i386/Packages.gz
