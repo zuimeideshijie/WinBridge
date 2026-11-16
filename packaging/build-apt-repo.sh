@@ -87,6 +87,14 @@ for arch in amd64 i386; do
         > "$DISTS/main/binary-$arch/Packages.gz"
 done
 
+# Flat ("trivial") archive alongside the dists/ one. Gitee's raw CDN caches
+# every path separately, so after a publish apt can get a fresh Packages.gz
+# next to a stale Release and abort with "Hash 校验和不符". A flat source
+# (`deb [trusted=yes] <base>/ ./`) only ever fetches <base>/Packages(.gz),
+# where there is no second file to disagree with.
+cp -f "$DISTS/main/binary-amd64/Packages" "$REPO/Packages"
+gzip -9cf "$REPO/Packages" > "$REPO/Packages.gz"
+
 # Never leave previous index/signature files where apt-ftparchive would
 # checksum them (including Release itself) as part of the new Release.
 rm -f "$DISTS/Release" "$DISTS/InRelease" "$DISTS/Release.gpg" \
@@ -122,6 +130,7 @@ echo "    仓库目录: $REPO"
 if [ -f "$DISTS/InRelease" ]; then
     echo "    源: deb [signed-by=/usr/share/keyrings/winbridge-archive-keyring.gpg] https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/ stable main"
 else
-    echo "    源: deb [trusted=yes] https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/ stable main"
+    echo "    源（扁平，推荐）: deb [trusted=yes] https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/ ./"
+    echo "    源（分栏，旧）:   deb [trusted=yes] https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/ stable main"
 fi
 echo "    Gitee 仓库名是 WinBidge（human_name 才是 WinBridge），地址不能写成 WinBridge。"
