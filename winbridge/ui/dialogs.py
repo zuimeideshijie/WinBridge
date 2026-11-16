@@ -18,8 +18,8 @@ from PyQt5.QtWidgets import (
 )
 from ..core.config import Config
 from ..core.wine import Wine
-from ..core.bottle import (ENVIRONMENT_LABELS, WINDOWS_VERSIONS,
-                           windows_version_label)
+from ..core.bottle import (BottleManager, ENVIRONMENT_LABELS,
+                           WINDOWS_VERSIONS, windows_version_label)
 from ..core.download import ComponentManager
 from ..core import registry
 from ..core.wine_runtimes import WineRuntimeManager, available_builds
@@ -194,6 +194,23 @@ class CreateBottleDialog(QDialog):
         self.description.setMaximumHeight(70)
         layout.addWidget(self.description)
 
+        # Pre-install the components every Windows program expects. The first
+        # bottle pays for it (~15 min); after that it is a template copy.
+        self.preinstall_check = QCheckBox(
+            "预装运行库与字体（VC++ 2022、Core/CJK 字体、.NET 4.8）")
+        self.preinstall_check.setChecked(True)
+        self.preinstall_check.setToolTip(
+            "首次需要十几分钟（.NET 4.8 安装慢），完成后会存成基础模板，"
+            "以后新建容器直接复制，几秒就好")
+        self.preinstall_check.toggled.connect(self._update_preinstall_hint)
+        layout.addWidget(self.preinstall_check)
+
+        self.preinstall_hint = QLabel()
+        self.preinstall_hint.setObjectName("hint")
+        self.preinstall_hint.setWordWrap(True)
+        layout.addWidget(self.preinstall_hint)
+        self._update_preinstall_hint(self.preinstall_check.isChecked())
+
         # Spacer
         layout.addStretch()
 
@@ -249,6 +266,13 @@ class CreateBottleDialog(QDialog):
         combo.blockSignals(False)
         self.on_wine_source_changed(combo.currentIndex())
 
+        if not system_exists and combo.count() == 1:
+            # Nothing usable at all: say so instead of letting the create
+            # button fail with a generic "创建失败".
+            self.wine_ver_hint.setText(
+                "未检测到系统 Wine，也没有已下载的运行时。"
+                "点『管理 Wine…』下载一个，或安装系统 Wine。")
+
     def open_wine_manager(self):
         """Download, update or delete Wine runners."""
         dialog = WineManagerDialog(self.config, self)
@@ -293,17 +317,64 @@ class CreateBottleDialog(QDialog):
                 self.wine_ver_hint.setText("无法获取版本信息")
 
     def get_wine_path(self) -> str:
-        """Get the selected Wine path."""
+        """Get the selected Wine path ("" when nothing usable is selected).
+
+        The old fallback returned ``config.wine_path`` even when that file no
+        longer existed, so creating a bottle on a machine without Wine failed
+        with a generic "创建失败".
+        """
         data = self.wine_source_combo.currentData()
         if data:
             return data
-        return self.wine_path_input.text().strip() or self.config.wine_path
+        return self.wine_path_input.text().strip()
+
+    def accept(self):
+        """Refuse to create a bottle without a usable Wine binary."""
+        path = self.get_wine_path()
+        if not path or not Path(path).exists():
+            box = QMessageBox(QMessageBox.Warning, "没有可用的 Wine",
+                              "当前没有可用的 Wine 可执行文件：\n"
+                              "系统未安装 Wine，或所选路径不存在。\n\n"
+                              "可以先下载一个运行时（Wine 11 / Soda / Proton 11），"
+                              "下载完再创建容器。", parent=self)
+            manage = box.addButton("打开 Wine 版本管理", QMessageBox.AcceptRole)
+            box.addButton("取消", QMessageBox.RejectRole)
+            box.exec_()
+            if box.clickedButton() is manage:
+                self.open_wine_manager()
+            return
+        super().accept()
 
     def get_sandbox(self) -> str:
         """Runtime chosen for the new bottle: "host" or "flatpak"."""
         if self.runtime_sandbox.isEnabled() and self.runtime_sandbox.isChecked():
             return "flatpak"
         return "host"
+
+    def get_preinstall(self) -> bool:
+        """Whether to install the default runtime/font components."""
+        return self.preinstall_check.isChecked()
+
+    def _update_preinstall_hint(self, checked: bool):
+        """Explain how long pre-installation takes for this configuration."""
+        if not checked:
+            self.preinstall_hint.setText("")
+            return
+        manager = BottleManager(self.config)
+        sandbox = self.get_sandbox()
+        if sandbox == "flatpak":
+            self.preinstall_hint.setText(
+                "沙箱容器里不能装组件，会先跳过；需要时切到宿主机再装。")
+            return
+        wine = self.get_wine_path() or self.config.wine_path
+        if manager.template_exists("win64" if self.arch_64.isChecked() else "win32",
+                                   wine):
+            self.preinstall_hint.setText(
+                "已有基础模板，创建时会直接复制，通常几秒完成。")
+        else:
+            self.preinstall_hint.setText(
+                "首次构建基础模板约 10~20 分钟（主要是 .NET 4.8），"
+                "之后新建容器都直接复制模板。")
 
 
 class FirstRunDialog(QDialog):

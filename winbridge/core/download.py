@@ -78,7 +78,7 @@ _SEGMENT_MIN_PIECE = 1 * 1024 * 1024
 def _open_url(url: str, timeout: int, method: str = None,
               headers: dict = None):
     """urlopen wrapper: MS hosts skip cert verification, others don't."""
-    request_headers = {"User-Agent": "WinBridge/1.3.3"}
+    request_headers = {"User-Agent": "WinBridge/1.3.4"}
     request_headers.update(headers or {})
     request = urllib.request.Request(url, headers=request_headers, method=method)
     host = (urllib.parse.urlsplit(url).hostname or "").lower()
@@ -211,6 +211,8 @@ COMPONENT_MAP = {
         # fusion=b 与安装耗时较长（含 dotnet40 前置），单独放开这两项。
         "winetricks_env": {"WINEDLLOVERRIDES": "fusion=b;winemenubuilder.exe=d"},
         "winetricks_idle_timeout": 900,
+        # 首次安装：微软安装器在 Wine 下跑静默 MSI，通常 10~20 分钟且中途无输出。
+        "estimated_minutes": 12,
         # winetricks 会用单连接 curl 从微软拉这两个包（约 123MB），CN 网络下
         # 明显更慢。先用 WinBridge 的多线程分片下载器按官方 URL 下好并校验
         # sha256 放进 winetricks 的缓存目录，winetricks 直接复用、不再自下载。
@@ -521,6 +523,19 @@ class ComponentManager:
         info = COMPONENT_MAP.get(component_name)
         if not info:
             return False, f"未知组件 '{component_name}'", {}, []
+
+        # Heavy Microsoft installers (.NET 4.8 and friends) spend 10+ minutes
+        # inside one silent MSI under Wine with no output of their own. A
+        # plain "处理中 …" line then reads like a hang, so stamp every message
+        # with elapsed time and say up front how long it normally takes.
+        if progress_callback and info.get("estimated_minutes"):
+            started = time.monotonic()
+            user_callback = progress_callback
+
+            def progress_callback(pct, total, msg, _cb=user_callback,
+                                  _t0=started):
+                elapsed = int(time.monotonic() - _t0)
+                _cb(pct, total, f"[{elapsed // 60}:{elapsed % 60:02d}] {msg}")
 
         # Sandboxed bottles run Wine inside the flatpak runtime, which has no
         # cabextract/7z/winetricks toolchain; installing here would also spawn
@@ -2053,7 +2068,10 @@ class ComponentManager:
         """Install a component via winetricks with real-time output."""
         check_cancel(cancel_event)
         if progress_callback:
-            progress_callback(0, 100, f"正在安装 {info['label']}...")
+            estimate = info.get("estimated_minutes")
+            hint = (f"，预计 {estimate} 分钟左右（微软安装器在 Wine 下较慢）"
+                    if estimate else "")
+            progress_callback(0, 100, f"正在安装 {info['label']}...{hint}")
 
         error_lines = []
 

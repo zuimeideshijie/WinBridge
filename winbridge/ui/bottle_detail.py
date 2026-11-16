@@ -114,6 +114,26 @@ class _IconLoadThread(QThread):
             self.icons_ready.emit(result)
 
 
+class _DuplicateBottleThread(QThread):
+    """Copy a prefix off the GUI thread — a full bottle can be several GB."""
+
+    done = pyqtSignal(object, str)  # (new_bottle, error)
+
+    def __init__(self, manager, source_name: str, new_name: str, parent=None):
+        super().__init__(parent)
+        self._manager = manager
+        self._source = source_name
+        self._new = new_name
+
+    def run(self):
+        try:
+            bottle, error = self._manager.clone_bottle(self._source,
+                                                       self._new)
+        except Exception as error:  # noqa: BLE001 - shown in a dialog
+            bottle, error = None, str(error)
+        self.done.emit(bottle, error)
+
+
 class BottleDetailWidget(QWidget):
     """Detailed view of a single bottle."""
 
@@ -186,6 +206,13 @@ class BottleDetailWidget(QWidget):
         toolbar_layout.addWidget(self.btn_c_drive)
 
         toolbar_layout.addStretch()
+
+        self.btn_duplicate = QPushButton("复制容器")
+        self.btn_duplicate.setObjectName("btnDefault")
+        self.btn_duplicate.setToolTip(
+            "复制当前容器（含已安装的 .NET／字体等），新容器不用重装组件")
+        self.btn_duplicate.clicked.connect(self.duplicate_bottle)
+        toolbar_layout.addWidget(self.btn_duplicate)
 
         self.btn_rename = QPushButton("重命名")
         self.btn_rename.setObjectName("btnDefault")
@@ -1979,6 +2006,42 @@ class BottleDetailWidget(QWidget):
             self.runtime_combo.setCurrentIndex(0)
             self.bottle_title.setText("选择容器以查看详情")
             self.bottle_deleted.emit(name)
+
+    def duplicate_bottle(self):
+        """Clone this bottle: .NET/fonts come along, no reinstall needed."""
+        if not self.current_bottle:
+            return
+        from PyQt5.QtWidgets import QInputDialog, QProgressDialog
+        source = self.current_bottle.name
+        new_name, ok = QInputDialog.getText(
+            self, "复制容器", "新容器名称:", QLineEdit.Normal,
+            f"{source} 副本")
+        new_name = (new_name or "").strip()
+        if not ok or not new_name or new_name == source:
+            return
+
+        progress = QProgressDialog("正在复制容器（含已安装组件）…", "", 0, 0, self)
+        progress.setWindowTitle("复制容器")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setCancelButton(None)
+        progress.show()
+
+        thread = _DuplicateBottleThread(self.bottle_manager, source, new_name, self)
+        self._duplicate_thread = thread
+
+        def finished(bottle, error):
+            progress.close()
+            if bottle is None:
+                QMessageBox.warning(self, "复制失败", error or "未知错误")
+                return
+            self.bottle_updated.emit(bottle.name)
+            QMessageBox.information(
+                self, "已复制",
+                f"新容器「{bottle.name}」已就绪，"
+                f"里面已包含原容器的程序与已装组件。")
+
+        thread.done.connect(finished)
+        thread.start()
 
     def rename_bottle(self):
         """Rename the current bottle."""

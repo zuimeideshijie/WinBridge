@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
     QStackedWidget, QFrame, QStatusBar, QProgressBar,
     QApplication, QFileDialog, QMessageBox, QMenuBar,
     QAction, QActionGroup, QSizePolicy, QSpacerItem,
+    QProgressDialog,
 )
 from ..core.config import Config
 from ..core.bottle import (Bottle, BottleManager, environment_key,
@@ -414,28 +415,79 @@ class MainWindow(QMainWindow):
             wine_path = dialog.get_wine_path()
             sandbox = dialog.get_sandbox()
 
+            preinstall = dialog.get_preinstall() and sandbox == "host"
+
+            # Building a prefix runs wineboot and injects fonts (tens of
+            # seconds); doing that on the GUI thread made the whole window
+            # freeze with no hint at all. Show a busy dialog and do the work
+            # in a worker.
+            progress = QProgressDialog(
+                "正在创建容器…\n首次创建会初始化 Wine 前缀并注入字体，"
+                "通常需要几十秒。", "", 0, 0, self)
+            progress.setWindowTitle("创建容器")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setCancelButton(None)
+            progress.setMinimumWidth(380)
+            progress.show()
             self.status_bar.showMessage(f"正在创建容器 '{name}'...")
-            QApplication.processEvents()
 
-            bottle = self.bottle_manager.create_bottle(
-                name=name, arch=arch, environment=env,
-                windows_version=win_ver, description=desc,
-                wine_path=wine_path, sandbox=sandbox,
-            )
+            class CreateThread(QThread):
+                done = pyqtSignal(object, bool, str)
 
-            if bottle:
+                def __init__(self, manager, kwargs):
+                    super().__init__()
+                    self.manager = manager
+                    self.kwargs = kwargs
+
+                def run(self):
+                    try:
+                        bottle, from_template = self.manager.create_or_clone(
+                            **self.kwargs)
+                        error = ""
+                    except Exception as exc:  # noqa: BLE001 - shown in a dialog
+                        bottle, from_template, error = None, False, str(exc)
+                    self.done.emit(bottle, from_template, error)
+
+            def finished(bottle, from_template, error):
+                progress.close()
+                if bottle is None:
+                    if not wine_path or not Path(wine_path).exists():
+                        QMessageBox.warning(
+                            self, "创建失败",
+                            "没有可用的 Wine：系统未安装 Wine，所选路径也不存在。\n"
+                            "请先在「工具 → Wine 版本管理」下载一个运行时再创建容器。")
+                    elif (self.config.bottles_dir / name).exists():
+                        QMessageBox.warning(self, "创建失败",
+                                            f"容器 '{name}' 已存在。")
+                    else:
+                        QMessageBox.warning(
+                            self, "创建失败",
+                            f"容器 '{name}' 创建失败。\n{error or '详情见终端输出。'}")
+                    self.status_bar.showMessage("创建容器失败")
+                    return
+                if preinstall and not from_template:
+                    self.start_bottle_prep(bottle)
+                elif from_template:
+                    self.status_bar.showMessage(
+                        f"容器 '{name}' 已由基础模板创建（自带运行库与字体）")
+                else:
+                    self.status_bar.showMessage(f"容器 '{name}' 创建成功")
                 self.load_bottles()
-                self.status_bar.showMessage(f"容器 '{name}' 创建成功")
-                # Select the new bottle
                 for i in range(self.bottle_list.count()):
                     item = self.bottle_list.item(i)
-                    if item.data(Qt.UserRole) == name:
+                    if item.data(Qt.UserRole) == bottle.name:
                         self.bottle_list.setCurrentItem(item)
                         self.on_bottle_selected(item)
                         break
-            else:
-                QMessageBox.warning(self, "创建失败",
-                                    f"容器 '{name}' 创建失败，可能已存在。")
+
+            self._create_thread = CreateThread(self.bottle_manager, dict(
+                name=name, arch=arch, environment=env,
+                windows_version=win_ver, description=desc,
+                wine_path=wine_path, sandbox=sandbox,
+                preinstall=preinstall,
+            ))
+            self._create_thread.done.connect(finished)
+            self._create_thread.start()
 
     def import_bottle(self):
         """Import an existing Wine prefix."""
@@ -738,12 +790,71 @@ class MainWindow(QMainWindow):
         self.cancel_base_btn.setVisible(True)
         self.thread.start()
 
-    def cancel_base_download(self):
-        """Ask the bulk component install to stop."""
-        event = getattr(self, "_base_cancel_event", None)
-        if not event or event.is_set():
+    def start_bottle_prep(self, bottle):
+        """Install the default components into a fresh bottle, then template it."""
+        class PrepThread(QThread):
+            progress = pyqtSignal(int, int)
+            status = pyqtSignal(str)
+            finished_prep = pyqtSignal(list)
+
+            def __init__(self, manager, bottle, cancel_event):
+                super().__init__()
+                self.manager = manager
+                self.bottle = bottle
+                self.cancel_event = cancel_event
+
+            def run(self):
+                def on_progress(value, total, message=None):
+                    self.progress.emit(value, total)
+                    if message:
+                        self.status.emit(message)
+                failures = self.manager.install_default_components(
+                    self.bottle, on_progress, self.cancel_event)
+                saved = None
+                if not self.cancel_event.is_set():
+                    saved = self.manager.save_template(self.bottle)
+                self.finished_prep.emit([failures, saved])
+
+        self._prep_cancel_event = threading.Event()
+        self._prep_thread = PrepThread(self.bottle_manager, bottle,
+                                       self._prep_cancel_event)
+        self._prep_thread.progress.connect(self.progress_bar.setValue)
+        self._prep_thread.status.connect(self.status_bar.showMessage)
+        self._prep_thread.finished_prep.connect(
+            lambda result: self.on_bottle_prep_finished(bottle, result))
+        self.progress_bar.setVisible(True)
+        self.cancel_base_btn.setEnabled(True)
+        self.cancel_base_btn.setVisible(True)
+        self.status_bar.showMessage(
+            "正在为容器预装运行库与字体（首次约 10~20 分钟，之后新建容器直接复制）…")
+        self._prep_thread.start()
+
+    def on_bottle_prep_finished(self, bottle, result):
+        """Report the pre-install result and refresh the bottle list."""
+        failures, template = result if len(result) == 2 else (result, None)
+        self.progress_bar.setVisible(False)
+        self.cancel_base_btn.setVisible(False)
+        self.cancel_base_btn.setEnabled(True)
+        self.load_bottles()
+        if failures:
+            names = "、".join(name for name, _error in failures)
+            self.status_bar.showMessage(f"预装未全部成功：{names}")
+            QMessageBox.warning(
+                self, "预装未完成",
+                f"以下组件安装失败：{names}\n"
+                "可在容器「组件」页单独重试。")
             return
-        event.set()
+        message = f"容器 '{bottle.name}' 已预装运行库与字体"
+        if template:
+            message += "，并已存为基础模板（以后新建容器直接复制）"
+        self.status_bar.showMessage(message)
+
+    def cancel_base_download(self):
+        """Ask the running bulk install (base files or bottle prep) to stop."""
+        for attr in ("_base_cancel_event", "_prep_cancel_event"):
+            event = getattr(self, attr, None)
+            if event and not event.is_set():
+                event.set()
         self.cancel_base_btn.setEnabled(False)
         self.status_bar.showMessage("正在取消...")
 
@@ -785,7 +896,7 @@ class MainWindow(QMainWindow):
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
-        version = QLabel("版本 1.3.3 · Wine 容器管理器")
+        version = QLabel("版本 1.3.4 · Wine 容器管理器")
         version.setObjectName("muted")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)

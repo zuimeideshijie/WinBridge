@@ -646,8 +646,11 @@ class BottleManager:
         if bottle_path.exists():
             return None
 
-        # Use custom Wine path if specified
+        # Use custom Wine path if specified; refuse early when there is no
+        # Wine at all (a deb install may have Wine only in Recommends).
         wine = Wine(wine_path) if wine_path else self.wine
+        if not wine.is_valid:
+            return None
 
         # Create the Wine prefix
         success = wine.create_prefix(str(bottle_path), arch, sandbox=sandbox)
@@ -675,6 +678,36 @@ class BottleManager:
 
         return bottle
 
+    def create_or_clone(self, name: str, arch: str = "win64",
+                        environment: str = "gaming",
+                        windows_version: str = "win10",
+                        description: str = "", wine_path: str = "",
+                        sandbox: str = "host",
+                        preinstall: bool = False) -> tuple:
+        """Create a bottle, reusing the prepared template when possible.
+
+        Returns (bottle, used_template). Kept separate from the UI so the
+        whole "copy template or build a prefix" decision can run in a worker
+        thread while a progress dialog is on screen.
+        """
+        if (preinstall and (sandbox or "host") == "host"
+                and self.template_exists(arch, wine_path)):
+            bottle, _error = self.bottle_from_template(name, arch, wine_path)
+            if bottle is not None:
+                bottle.windows_version = windows_version
+                if environment:
+                    bottle.environment = environment
+                if description:
+                    bottle.description = description
+                bottle.sandbox = sandbox or "host"
+                return bottle, True
+        bottle = self.create_bottle(name=name, arch=arch,
+                                    environment=environment,
+                                    windows_version=windows_version,
+                                    description=description,
+                                    wine_path=wine_path, sandbox=sandbox)
+        return bottle, False
+
     def delete_bottle(self, name: str) -> bool:
         """Delete a bottle by name."""
         bottle = self.get_bottle(name)
@@ -682,6 +715,163 @@ class BottleManager:
             bottle.delete()
             return True
         return False
+
+    # Items that make a bottle what it is. Same list Bottles copies in
+    # backup.py::_DUPLICATE_ITEMS (drive_c + the registry hives), because that
+    # is where installed .NET/fonts/components live. `dosdevices` is copied as
+    # well so drive letters keep working without a wineboot round trip.
+    _DUPLICATE_ITEMS = ("drive_c", "dosdevices", "system.reg", "user.reg",
+                        "userdef.reg")
+
+    # Components a new bottle is expected to have (VC++ runtime, Latin and
+    # CJK fonts, .NET 4.8). Installing them takes ~12 minutes under Wine, so
+    # the result is snapshotted as a template and every later bottle is a
+    # copy of it (a few seconds).
+    DEFAULT_COMPONENTS = ("vcrun2022", "corefonts", "cjkfonts", "dotnet48")
+
+    def clone_bottle(self, source_name: str, new_name: str) -> tuple:
+        """Copy a bottle so a new one starts with everything installed."""
+        source = self.bottles_dir / str(source_name)
+        if not (source / "user.reg").exists():
+            return None, f"找不到容器：{source_name}"
+        return self._copy_prefix(source, self.bottles_dir, new_name)
+
+    @property
+    def template_dir(self) -> Path:
+        return self.config.data_dir / "templates"
+
+    def template_key(self, arch: str, wine_path: str) -> str:
+        """Templates are per architecture and per Wine build."""
+        wine = Path(wine_path or self.config.wine_path)
+        tag = wine.parent.parent.name or wine.parent.name or "wine"
+        return f"{arch or 'win64'}-{tag}"
+
+    def template_exists(self, arch: str, wine_path: str) -> bool:
+        template = self.template_dir / self.template_key(arch, wine_path)
+        return (template / "user.reg").exists()
+
+    def bottle_from_template(self, name: str, arch: str, wine_path: str) -> tuple:
+        """Create a bottle by copying the prepared template (fast path)."""
+        template = self.template_dir / self.template_key(arch, wine_path)
+        if not (template / "user.reg").exists():
+            return None, "还没有可用的基础模板。"
+        bottle, error = self._copy_prefix(template, self.bottles_dir, name)
+        if bottle is None:
+            return None, error
+        bottle._meta["arch"] = arch or "win64"
+        if wine_path:
+            bottle._meta["wine_path"] = wine_path
+        bottle._save_meta()
+        return bottle, ""
+
+    def save_template(self, bottle) -> Optional[str]:
+        """Snapshot a fully prepared bottle as the template for its runtime."""
+        if (bottle.sandbox or "host") != "host":
+            return None
+        key = self.template_key(bottle.arch, bottle.wine_path)
+        target = self.template_dir / key
+        if (target / "user.reg").exists():
+            return key
+        self.template_dir.mkdir(parents=True, exist_ok=True)
+        _, error = self._copy_prefix(Path(bottle.path), self.template_dir, key)
+        return key if not error else None
+
+    def install_default_components(self, bottle, progress_callback=None,
+                                  cancel_event=None) -> list:
+        """Install DEFAULT_COMPONENTS into a bottle; returns [(name, error)]."""
+        from .download import ComponentManager
+
+        manager = ComponentManager(self.config)
+        failures = []
+        for name in self.DEFAULT_COMPONENTS:
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            ok, log, overrides, files = manager.install(
+                name, str(bottle.path), progress_callback, cancel_event)
+            if not ok:
+                failures.append((name, (log or "").strip()[:200]))
+                continue
+            bottle.add_component(name)
+            for dll, mode in (overrides or {}).items():
+                bottle.set_dll_override(dll, mode)
+            bottle.set_component_record(name, files or [], overrides or {})
+        return failures
+
+    def _copy_prefix(self, source: Path, root: Path, new_name: str) -> tuple:
+        """Copy one prefix into ``root/new_name`` and fix up its metadata."""
+        new_name = (new_name or "").strip()
+        if not new_name:
+            return None, "容器名称不能为空。"
+        if "/" in new_name or new_name in (".", ".."):
+            return None, "容器名称不能包含斜杠。"
+
+        target_name = self._unique_name_in(root, new_name)
+        target = root / target_name
+
+        needed = 0
+        for item in self._DUPLICATE_ITEMS:
+            path = source / item
+            if path.is_dir():
+                needed += sum(f.stat().st_size for f in path.rglob("*")
+                              if f.is_file() and not f.is_symlink())
+            elif path.is_file():
+                needed += path.stat().st_size
+        free = shutil.disk_usage(root).free
+        if needed and free < needed:
+            return None, (f"磁盘空间不足：需要约 {needed // (1024 ** 2)} MB，"
+                          f"剩余 {free // (1024 ** 2)} MB。")
+
+        try:
+            target.mkdir(parents=True, exist_ok=False)
+        except OSError as error:
+            return None, str(error)
+
+        try:
+            for item in self._DUPLICATE_ITEMS:
+                src = source / item
+                dst = target / item
+                if src.is_dir():
+                    shutil.copytree(src, dst, symlinks=True)
+                elif src.is_file():
+                    shutil.copy2(src, dst)
+
+            meta_file = source / "bottle.json"
+            meta = (json.loads(meta_file.read_text("utf-8"))
+                    if meta_file.exists() else {})
+            meta["name"] = target_name
+            meta["created"] = datetime.now().isoformat()
+            meta["modified"] = meta["created"]
+            # Shortcut targets, icons and component records may hold absolute
+            # paths inside the old prefix; point them at the copy.
+            meta = self._rewrite_bottle_paths(meta, str(source), str(target))
+            (target / "bottle.json").write_text(
+                json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        except (OSError, ValueError) as error:
+            shutil.rmtree(target, ignore_errors=True)
+            return None, str(error)
+
+        return Bottle(str(target), config=self.config), ""
+
+    def _unique_name_in(self, root: Path, name: str) -> str:
+        """Append __1, __2 … until the name is free (Bottles does the same)."""
+        candidate = name
+        suffix = 1
+        while (root / candidate).exists():
+            candidate = f"{name}__{suffix}"
+            suffix += 1
+        return candidate
+
+    @classmethod
+    def _rewrite_bottle_paths(cls, value, old_root: str, new_root: str):
+        """Replace old prefix paths inside bottle.json strings, recursively."""
+        if isinstance(value, str):
+            return value.replace(old_root, new_root)
+        if isinstance(value, list):
+            return [cls._rewrite_bottle_paths(v, old_root, new_root) for v in value]
+        if isinstance(value, dict):
+            return {k: cls._rewrite_bottle_paths(v, old_root, new_root)
+                    for k, v in value.items()}
+        return value
 
     def rename_bottle(self, old_name: str, new_name: str) -> bool:
         """Rename a bottle."""
@@ -695,13 +885,11 @@ class BottleManager:
         return True
 
     def duplicate_bottle(self, name: str, new_name: str) -> Optional[Bottle]:
-        """Duplicate a bottle."""
-        src = self.bottles_dir / name
-        dst = self.bottles_dir / new_name
-        if not src.exists() or dst.exists():
-            return None
-        shutil.copytree(str(src), str(dst))
-        bottle = Bottle(str(dst), name=new_name, config=self.config)
-        bottle._meta["created"] = datetime.now().isoformat()
-        bottle._save_meta()
+        """Duplicate a bottle.
+
+        Kept as the simple entry point (returns the new bottle or None); the
+        work happens in :meth:`clone_bottle`, which reports *why* it failed
+        and rewrites paths inside the copied metadata.
+        """
+        bottle, _error = self.clone_bottle(name, new_name)
         return bottle
