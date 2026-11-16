@@ -9,18 +9,19 @@
 # index, installs/upgrades winbridge and verifies the installed version.
 set -eu
 
-# Every base mirrors the same `apt-repo` branch. GitHub raw is fetched through
-# the project's gh-proxy mirror chain (same list WinBridge uses for downloads);
-# Gitee stays as the last resort. The script picks the first base that serves
-# the root `Packages` (flat archive), so one slow mirror does not block users.
+# Every base mirrors the same `apt-repo` branch. Gitee is the default source;
+# if it is unreachable the same files are tried through the GitHub mirror chain
+# (gh-proxy prefixes, same list WinBridge uses for downloads). The script picks
+# the first base that serves the root `Packages` (flat archive), so one slow
+# mirror does not block users.
 GITHUB_RAW="https://raw.githubusercontent.com/zuimeideshijie/WinBridge/apt-repo/"
 DEFAULT_BASES="
+https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/
 https://gh-proxy.org/$GITHUB_RAW
 https://v6.gh-proxy.org/$GITHUB_RAW
 https://gh-proxy.com/$GITHUB_RAW
 https://ghproxy.net/$GITHUB_RAW
 $GITHUB_RAW
-https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/
 "
 BASE_URL="${WINBRIDGE_APT_BASE:-}"
 BASE_URL="${BASE_URL%/}"
@@ -32,7 +33,7 @@ usage() {
     cat <<EOF
 用法: sudo bash install.sh [--base URL]
 
-  --base URL   使用自定义 APT 源根地址（默认依次尝试 gh-proxy → GitHub → Gitee）
+  --base URL   使用自定义 APT 源根地址（默认 Gitee，失败再试 GitHub 镜像链）
   --check      只探测各镜像是否已同步，打印可用源后退出（不安装）
   -h, --help   显示帮助
 EOF
@@ -140,7 +141,7 @@ for candidate in $CANDIDATES; do
     warn "该源暂不可用（可能还没同步），尝试下一个"
 done
 
-[ -n "$CHOSEN" ] || die "所有镜像都还没有可用的 Packages 索引。
+[ -n "$CHOSEN" ] || die "所有源都还没有可用的 Packages 索引。
 可能是刚发布、镜像仍在同步（通常几分钟到一小时）。请稍后重试，
 或用 --base 指定一个自建源地址。"
 BASE_URL="$CHOSEN"
