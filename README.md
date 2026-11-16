@@ -63,30 +63,10 @@ WinBridge 旨在解决这些问题，提供一个**用户友好的图形界面**
 ## 2. 快速入门
 
 ### 2.1 安装与启动
-**下载**
 
-见“发行版”
+**一键安装（推荐）**
 
-**安装 / 管理 Wine**
-
-WinBridge 自带 Wine 版本管理，不再需要先按 WineHQ 教程手动安装系统 Wine：
-
-1. 打开 **工具 → Wine 版本管理…**。新建容器或容器配置页里也有 **管理 Wine…** 按钮。
-2. 选择 **Wine 11**、**Soda 11**、**Proton 11** 或 **Wine-GE**，点击 **安装**。下载会自动走镜像站，运行时保存在 `~/.local/share/winbridge/runners/`。
-3. 在容器配置页的 **Wine 版本** 下拉里选择已安装的版本；选择 **系统默认** 则使用系统 Wine。
-4. 同一个窗口可以删除不再使用的 Wine 版本，包括系统 Wine。系统 Wine 如果由包管理器安装，会通过 `apt-get remove` 卸载，需要管理员授权；删除前请先确保没有容器或程序正在使用它。
-
-启动时 WinBridge 会自动检查已安装的 Wine 运行时，有上游新版本会在界面中提示更新。
-
-**安装程序**
-
-```bash
-sudo dpkg -i /安装路径/安装包名
-```
-
-**通过 APT 源安装（测试源，尚未签名）**
-
-一键安装脚本（会检查 apt 环境、配置源、更新索引、安装并验证）：
+自动完成环境检查、配置 APT 源、更新索引、安装和验证：
 
 ```bash
 curl -fsSL --proto '=https' --tlsv1.2 \
@@ -104,8 +84,18 @@ less /tmp/winbridge-install.sh
 sudo bash /tmp/winbridge-install.sh
 ```
 
-也可以手动添加源。Gitee 的仓库名是 `WinBidge`（页面标题显示为 WinBridge），
-源地址必须用前者：
+> 当前 APT 源为未签名测试源，脚本会使用 `[trusted=yes]`。Gitee 仓库名是
+> `WinBidge`（页面标题显示为 WinBridge），地址必须用前者。
+
+**其他安装方式**
+
+deb 包安装：
+
+```bash
+sudo dpkg -i /安装路径/安装包名
+```
+
+手动添加 APT 源：
 
 ```bash
 echo "deb [trusted=yes] https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/ stable main" \
@@ -114,9 +104,16 @@ sudo apt update
 sudo apt install winbridge
 ```
 
-> 当前仓库未做 GPG 签名，所以先用 `[trusted=yes]`。签名完成后安装脚本会自动
-> 检测 `public.key` 并切换到 `signed-by`；也可以手动使用
-> `/usr/share/keyrings/winbridge-archive-keyring.gpg`。
+**安装 / 管理 Wine**
+
+WinBridge 自带 Wine 版本管理，不再需要先按 WineHQ 教程手动安装系统 Wine：
+
+1. 打开 **工具 → Wine 版本管理…**。新建容器或容器配置页里也有 **管理 Wine…** 按钮。
+2. 选择 **Wine 11**、**Soda 11**、**Proton 11** 或 **Wine-GE**，点击 **安装**。下载会自动走镜像站，运行时保存在 `~/.local/share/winbridge/runners/`。
+3. 在容器配置页的 **Wine 版本** 下拉里选择已安装的版本；选择 **系统默认** 则使用系统 Wine。
+4. 同一个窗口可以删除不再使用的 Wine 版本，包括系统 Wine。系统 Wine 如果由包管理器安装，会通过 `apt-get remove` 卸载，需要管理员授权；删除前请先确保没有容器或程序正在使用它。
+
+启动时 WinBridge 会自动检查已安装的 Wine 运行时，有上游新版本会在界面中提示更新。
 
 首次启动时，您将看到欢迎界面，引导您创建第一个容器。
 
