@@ -89,8 +89,18 @@ sudo dpkg -i /安装路径/安装包名
 一键安装脚本（会检查 apt 环境、配置源、更新索引、安装并验证）：
 
 ```bash
-curl -fsSL https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/install.sh \
+curl -fsSL --proto '=https' --tlsv1.2 \
+  https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/install.sh \
+  | sudo bash
+```
+
+如果希望先检查脚本内容再执行：
+
+```bash
+curl -fsSL --proto '=https' --tlsv1.2 \
+  https://gitee.com/zuimeideshijie/WinBidge/raw/apt-repo/install.sh \
   -o /tmp/winbridge-install.sh
+less /tmp/winbridge-install.sh
 sudo bash /tmp/winbridge-install.sh
 ```
 
