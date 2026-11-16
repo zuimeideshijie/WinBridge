@@ -5,6 +5,7 @@ member to use — the bugs that made components report success without taking
 effect. Nothing here needs Wine or a real prefix.
 """
 
+import json
 import os
 import struct
 import threading
@@ -518,6 +519,43 @@ class CabIntegrityTests(unittest.TestCase):
     def test_missing_file_is_rejected(self):
         self.assertFalse(
             ComponentManager._cab_integrity_ok(self.dir / "nope.msi"))
+
+
+class BottleWineSelectionTests(unittest.TestCase):
+    """Component installs must use the Wine the bottle selected."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.bottle = self.root / "bottle"
+        self.bottle.mkdir()
+        self.system_wine = self.root / "system-wine"
+        self.system_wine.write_text("")
+        self.runner_wine = self.root / "runners" / "soda" / "bin" / "wine"
+        self.runner_wine.parent.mkdir(parents=True)
+        self.runner_wine.write_text("")
+        self.manager = make_manager()
+        self.manager.config.wine_path = str(self.system_wine)
+
+    def write_meta(self, wine_path: str):
+        (self.bottle / "bottle.json").write_text(
+            json.dumps({"wine_path": wine_path}), encoding="utf-8")
+
+    def test_uses_the_bottle_runner(self):
+        self.write_meta(str(self.runner_wine))
+        wine = self.manager._wine_for_bottle(str(self.bottle))
+        self.assertEqual(wine.wine_path, str(self.runner_wine))
+
+    def test_falls_back_to_system_wine_for_old_bottles(self):
+        self.write_meta("")
+        wine = self.manager._wine_for_bottle(str(self.bottle))
+        self.assertEqual(wine.wine_path, str(self.system_wine))
+
+    def test_falls_back_when_the_runner_is_gone(self):
+        self.write_meta(str(self.root / "runners" / "gone" / "bin" / "wine"))
+        wine = self.manager._wine_for_bottle(str(self.bottle))
+        self.assertEqual(wine.wine_path, str(self.system_wine))
 
 
 if __name__ == "__main__":

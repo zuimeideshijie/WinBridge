@@ -17,6 +17,25 @@ ENVIRONMENT_LABELS = {
     "custom": "自定义",
 }
 
+# Windows versions as Wine's `winecfg -v` understands them.
+WINDOWS_VERSIONS = (
+    "win11", "win10", "win81", "win8", "win7", "vista",
+    "win2003", "winxp", "win2k", "winme", "win98", "win95",
+)
+
+# Only the versions whose Wine key is not the user-facing name. Everything
+# else (win10, win7, winxp…) is shown as-is.
+WINDOWS_VERSION_LABELS = {
+    "win81": "win8.1",
+    "win2k": "win2000",
+}
+
+
+def windows_version_label(value: str) -> str:
+    """Display label for a stored Windows version key."""
+    raw = (value or "").strip()
+    return WINDOWS_VERSION_LABELS.get(raw, raw)
+
 
 def environment_key(value: str) -> str:
     """Normalise a stored environment value to one of the known keys.

@@ -68,7 +68,8 @@ class Wine:
                 result = subprocess.run(
                     [self.wine_path, "--version"],
                     capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=10
+                    encoding="utf-8", errors="replace", timeout=10,
+                    env=self._base_env()
                 )
                 self._version = result.stdout.strip() or "unknown"
             except Exception:
@@ -86,6 +87,39 @@ class Wine:
         if ws.exists():
             return str(ws)
         return "wineserver"
+
+    def _base_env(self) -> Dict[str, str]:
+        """Process environment including a portable runner's own libraries.
+
+        Kron4ek/Wine-GE/Proton trees keep their shared libraries in
+        ``<root>/lib`` next to ``bin/wine``. A distro Wine does not need this
+        (and must not get it — /usr paths would leak into the sandbox), so the
+        extra path is only added for self-contained trees.
+        """
+        environment = os.environ.copy()
+        self._apply_runner_env(environment)
+        return environment
+
+    def environment(self) -> Dict[str, str]:
+        """Public copy of the environment a Wine invocation needs."""
+        return self._base_env()
+
+    def _apply_runner_env(self, environment: Dict[str, str]):
+        try:
+            real = Path(self.wine_path).resolve()
+        except (OSError, RuntimeError):
+            return
+        root = real.parent.parent
+        if str(root).startswith("/usr") or str(root) == "/":
+            return
+        lib_dirs = [root / "lib", root / "lib64",
+                    root / "lib" / "x86_64-linux-gnu"]
+        lib_dirs = [str(path) for path in lib_dirs if path.is_dir()]
+        if not lib_dirs:
+            return
+        existing = environment.get("LD_LIBRARY_PATH", "")
+        parts = lib_dirs + ([existing] if existing else [])
+        environment["LD_LIBRARY_PATH"] = ":".join(parts)
 
     def _sandbox(self, bottle_path: str = None,
                  mode: str = "") -> Optional[SandboxRuntime]:
@@ -105,7 +139,7 @@ class Wine:
             args: list = None, workdir: str = None,
             env: dict = None, wait: bool = True) -> subprocess.Popen:
         """Run a command in a Wine bottle environment."""
-        environment = os.environ.copy()
+        environment = self._base_env()
         environment["WINEPREFIX"] = bottle_path
         environment["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d"
         if env:
@@ -137,7 +171,7 @@ class Wine:
     def run_cmd(self, bottle_path: str, wine_cmd: str,
                 env: dict = None, timeout: int = 120) -> subprocess.CompletedProcess:
         """Run a Wine command string in a bottle."""
-        environment = os.environ.copy()
+        environment = self._base_env()
         environment["WINEPREFIX"] = bottle_path
         if env:
             environment.update(env)
@@ -186,7 +220,7 @@ class Wine:
         would recreate system.reg/user.reg — and the directory — right
         after we deleted it.
         """
-        env = os.environ.copy()
+        env = self._base_env()
         if bottle_path:
             env["WINEPREFIX"] = bottle_path
         runtime = self._sandbox(bottle_path) if bottle_path else None
@@ -313,7 +347,7 @@ class Wine:
         "" for the host): the prefix has no bottle.json yet, so the usual
         per-bottle lookup cannot answer.
         """
-        environment = os.environ.copy()
+        environment = self._base_env()
         environment["WINEPREFIX"] = bottle_path
         environment["WINEARCH"] = arch
         environment["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d"
@@ -361,7 +395,7 @@ class Wine:
         """
         tmp = tempfile.mkdtemp(prefix="winbridge-fonts-")
         try:
-            environment = os.environ.copy()
+            environment = self._base_env()
             environment["WINEPREFIX"] = tmp
             environment["WINEARCH"] = "win64"
             environment["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d"
@@ -514,7 +548,7 @@ class Wine:
         enumerate installed fonts through the registry rather than the
         filesystem.
         """
-        env = os.environ.copy()
+        env = self._base_env()
         env["WINEPREFIX"] = bottle_path
         env["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d"
         cmd = [self.wine_path, "reg", "add",
@@ -536,28 +570,57 @@ class Wine:
         except Exception:
             return False
 
-    def list_processes(self, bottle_path: str = None) -> list:
-        """List running Wine processes.
+    @staticmethod
+    def _process_prefix(pid: str) -> str:
+        """WINEPREFIX of a running process ("" when unreadable)."""
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as handle:
+                for item in handle.read().split(b"\0"):
+                    if item.startswith(b"WINEPREFIX="):
+                        return item.split(b"=", 1)[1].decode("utf-8", "ignore")
+        except OSError:
+            pass
+        return ""
 
-        Returns a list of dicts with keys: pid, name, cpu, memory, exe_path.
-        Only returns user-facing processes, filtering out internal Wine services.
+    @staticmethod
+    def _process_name(argv: list) -> str:
+        """User-facing program name for one ``ps`` command line."""
+        for arg in argv:
+            lowered = arg.lower()
+            if lowered.endswith((".exe", ".msi", ".bat", ".cmd")):
+                return arg.replace("\\", "/").rsplit("/", 1)[-1]
+        if argv:
+            return Path(argv[0]).name
+        return ""
+
+    def list_processes(self, bottle_path: str = None) -> list:
+        """List the user-facing processes of one bottle.
+
+        ``WINEPREFIX`` is read from ``/proc/<pid>/environ`` instead of
+        trusting the command line: a bottle must not show (or kill) another
+        bottle's programs. Flatpak does not hide these processes from the
+        host on this setup, and they carry the same WINEPREFIX, which is what
+        makes the task manager work for sandboxed bottles too.
         """
-        # Known Wine internal background processes to exclude
-        internal_processes = {
+        internal = {
             "wineserver", "winedevice", "services.exe", "plugplay.exe",
             "explorer.exe", "rpcss.exe", "svchost.exe", "winecfg.exe",
             "wineboot.exe", "winebrowser.exe", "winemenubuilder.exe",
-            "isapibrowser.dll", "start.ch", "desktop",
+            "start.exe", "conhost.exe", "bwrap", "flatpak",
+            "xdg-dbus-proxy", "flatpak-session-helper",
         }
-        try:
-            env = os.environ.copy()
-            if bottle_path:
-                env["WINEPREFIX"] = bottle_path
+        wanted_prefix = ""
+        if bottle_path:
+            try:
+                wanted_prefix = os.path.realpath(bottle_path)
+            except OSError:
+                wanted_prefix = str(bottle_path)
 
+        try:
             result = subprocess.run(
                 ["ps", "aux", "--sort=-%cpu"],
                 capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=10
+                encoding="utf-8", errors="replace", timeout=10
             )
             processes = []
             for line in result.stdout.split("\n")[1:]:
@@ -566,39 +629,56 @@ class Wine:
                 parts = line.split(None, 10)
                 if len(parts) < 11:
                     continue
-                user, pid, cpu, mem, vsz, rss, tty, stat, start, time, cmd = parts
+                user, pid, cpu, mem, vsz, rss, tty, stat, start, elapsed, cmd = parts
                 low = cmd.lower()
-                if "wine" in low or "wine64" in low or \
-                   ".exe" in low or "wineserver" in low or \
-                   "winedevice" in low:
-                    name = cmd.split("/")[-1] if "/" in cmd else cmd
-                    # Skip Wine internal background processes
-                    if name.lower() in internal_processes:
+                if not any(token in low for token in
+                           ("wine", ".exe", ".msi", ".bat", ".cmd")):
+                    continue
+                try:
+                    argv = shlex.split(cmd)
+                except ValueError:
+                    argv = cmd.split()
+                # Launcher shells/bwrap carry the whole inner command
+                # (including "game.exe") in one argument; they are not the
+                # program itself.
+                argv0 = Path(argv[0]).name.lower() if argv else ""
+                if argv0 in ("bash", "sh", "dash", "timeout", "env", "setsid",
+                             "nohup", "bwrap", "flatpak", "xdg-dbus-proxy",
+                             "flatpak-session-helper"):
+                    continue
+                name = self._process_name(argv)
+                lowered = name.lower()
+                if not name or lowered in internal:
+                    continue
+                if name.startswith(("C:", "c:", "prefetch:")):
+                    continue
+
+                if wanted_prefix:
+                    prefix = self._process_prefix(pid)
+                    if prefix:
+                        if os.path.realpath(prefix) != wanted_prefix:
+                            continue
+                    elif wanted_prefix not in cmd:
                         continue
-                    # Skip processes with C:... paths (Wine internal executables)
-                    if name.startswith("C:") or name.startswith("c:"):
-                        continue
-                    # Skip prefetch processes
-                    if name.startswith("prefetch:"):
-                        continue
-                    processes.append({
-                        "pid": pid,
-                        "cpu": cpu,
-                        "memory": mem,
-                        "name": name,
-                        "exe_path": cmd,
-                        "user": user,
-                        "status": stat,
-                        "start_time": start,
-                    })
+
+                processes.append({
+                    "pid": pid,
+                    "cpu": cpu,
+                    "memory": mem,
+                    "name": name,
+                    "exe_path": cmd,
+                    "user": user,
+                    "status": stat,
+                    "start_time": start,
+                })
             return processes
         except Exception:
             return []
 
     def kill_process(self, pid: str) -> bool:
-        """Kill a process by PID."""
+        """Kill a process by PID (works for sandboxed ones too)."""
         try:
-            subprocess.run(["kill", "-9", str(pid)], capture_output=True, timeout=5)
+            os.kill(int(pid), 9)
             return True
-        except Exception:
+        except (OSError, ValueError):
             return False

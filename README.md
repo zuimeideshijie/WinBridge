@@ -47,14 +47,14 @@ WinBridge 旨在解决这些问题，提供一个**用户友好的图形界面**
 |------|------|
 | **容器管理** | 创建、重命名、删除 Windows 应用容器，每个容器独立运行 |
 | **组件管理** | 安装/卸载容器内的 Windows 组件（如 DirectX、.NET Framework） |
-| **Wine 版本管理** | 支持系统默认 Wine 或自定义 Wine 版本，一键切换 |
+| **Wine 版本管理** | 支持系统 Wine 与 Wine 11 / Soda / Proton / Wine-GE，一键下载、切换与删除 |
 | **任务管理** | 监控和管理正在运行的 Windows 应用进程 |
 | **配置管理** | 图形化配置 DLL 覆盖、注册表、容器参数 |
 
 ### 1.4 系统要求
 
 - **操作系统**：Linux（支持主流发行版：Ubuntu、Debian、Fedora、Arch Linux 等）
-- **Wine**：建议安装 Wine 7.0 或更高版本
+- **Wine**：可使用系统已安装的 Wine，也可以直接在 WinBridge 内下载 Wine 运行时（无需预先安装）
 - **磁盘空间**：至少 2 GB 可用空间（每个容器额外需要 1 GB - 10 GB）
 - **内存**：建议 4 GB 或以上
 
@@ -67,10 +67,16 @@ WinBridge 旨在解决这些问题，提供一个**用户友好的图形界面**
 
 见“发行版”
 
-**安装wine**
-见winehq官方网站
+**安装 / 管理 Wine**
 
-[https://gitlab.winehq.org/wine/wine/-/wikis/zh_CN/Download](https://gitlab.winehq.org/wine/wine/-/wikis/zh_CN/Download)
+WinBridge 自带 Wine 版本管理，不再需要先按 WineHQ 教程手动安装系统 Wine：
+
+1. 打开 **工具 → Wine 版本管理…**。新建容器或容器配置页里也有 **管理 Wine…** 按钮。
+2. 选择 **Wine 11**、**Soda 11**、**Proton 11** 或 **Wine-GE**，点击 **安装**。下载会自动走镜像站，运行时保存在 `~/.local/share/winbridge/runners/`。
+3. 在容器配置页的 **Wine 版本** 下拉里选择已安装的版本；选择 **系统默认** 则使用系统 Wine。
+4. 同一个窗口可以删除不再使用的 Wine 版本，包括系统 Wine。系统 Wine 如果由包管理器安装，会通过 `apt-get remove` 卸载，需要管理员授权；删除前请先确保没有容器或程序正在使用它。
+
+启动时 WinBridge 会自动检查已安装的 Wine 运行时，有上游新版本会在界面中提示更新。
 
 **安装程序**
 
@@ -88,7 +94,8 @@ sudo dpkg -i /安装路径/安装包名
 4. 选择 Windows 版本（例如 Windows 10）。
 5. 选择 Wine 版本：
    - **系统默认**：使用系统已安装的 Wine 版本。
-   - **自定义路径**：指定您下载的独立 Wine 版本路径。
+   - **已下载的运行时**：Wine 11 / Soda 11 / Proton 11 / Wine-GE，可在对话框里点 **管理 Wine…** 下载或删除。
+   - **自定义路径**：指定您自己准备的独立 Wine 版本路径。
 6. 点击 **"创建"** 按钮确认创建。
 
 > 💡 **提示**：创建过程中，WinBridge 会自动初始化 Wine 前缀并进行基本配置，通常需要几秒钟到几分钟。

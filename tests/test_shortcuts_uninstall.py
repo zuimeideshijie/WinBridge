@@ -137,6 +137,74 @@ class AddShortcutTests(unittest.TestCase):
         self.assertEqual(len(self.bottle.shortcuts), 1)
 
 
+class AppRootTests(unittest.TestCase):
+    """Forced deletion must work for every usual per-app install layout."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.bottle = Path(self.tmp.name) / "bottle"
+        self.bottle.mkdir()
+        self.addCleanup(self.tmp.cleanup)
+
+    def root_for(self, relative: str) -> Path:
+        target = self.bottle / "drive_c" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"MZ")
+        return shortcuts._app_root(target, self.bottle)
+
+    def test_program_files_app_folder(self):
+        root = self.root_for("Program Files/MyApp/bin/App.exe")
+        self.assertEqual(root, self.bottle / "drive_c" / "Program Files" / "MyApp")
+
+    def test_appdata_local_app_folder(self):
+        root = self.root_for("users/me/AppData/Local/MyApp/App.exe")
+        self.assertEqual(root, self.bottle / "drive_c" / "users" / "me"
+                         / "AppData" / "Local" / "MyApp")
+
+    def test_appdata_local_programs_folder(self):
+        root = self.root_for(
+            "users/me/AppData/Local/Programs/MyApp/bin/App.exe")
+        self.assertEqual(root, self.bottle / "drive_c" / "users" / "me"
+                         / "AppData" / "Local" / "Programs" / "MyApp")
+
+    def test_programdata_app_folder(self):
+        root = self.root_for("ProgramData/MyApp/App.exe")
+        self.assertEqual(root, self.bottle / "drive_c" / "ProgramData" / "MyApp")
+
+    def test_programdata_vendor_folder(self):
+        root = self.root_for("ProgramData/Vendor/MyApp/App.exe")
+        self.assertEqual(root, self.bottle / "drive_c" / "ProgramData"
+                         / "Vendor" / "MyApp")
+
+    def test_portable_game_folder(self):
+        root = self.root_for("Games/MyApp/App.exe")
+        self.assertEqual(root, self.bottle / "drive_c" / "Games" / "MyApp")
+
+    def test_steam_library_only_removes_the_game_folder(self):
+        root = self.root_for("steamapps/common/MyGame/game.exe")
+        self.assertEqual(root, self.bottle / "drive_c" / "steamapps"
+                         / "common" / "MyGame")
+
+    def test_program_directly_in_a_library_is_refused(self):
+        self.assertIsNone(self.root_for("steamapps/game.exe"))
+        self.assertIsNone(self.root_for("Games/App.exe"))
+
+    def test_windows_directory_is_never_an_app_root(self):
+        self.assertIsNone(self.root_for("windows/system32/notepad.exe"))
+
+    def test_shared_program_files_root_is_refused(self):
+        self.assertIsNone(self.root_for("Program Files/App.exe"))
+
+    def test_appdata_app_gets_a_removal_plan(self):
+        target = (self.bottle / "drive_c" / "users" / "me" / "AppData"
+                  / "Local" / "MyApp" / "App.exe")
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"MZ")
+        plan = shortcuts.plan_uninstall(target, self.bottle)
+        self.assertIsNotNone(plan)
+        self.assertEqual(Path(plan["root"]), target.parent)
+
+
 class MissingTargetTests(unittest.TestCase):
     """The 刷新 button offers to drop shortcuts whose program is gone."""
 

@@ -78,7 +78,7 @@ _SEGMENT_MIN_PIECE = 1 * 1024 * 1024
 def _open_url(url: str, timeout: int, method: str = None,
               headers: dict = None):
     """urlopen wrapper: MS hosts skip cert verification, others don't."""
-    request_headers = {"User-Agent": "WinBridge/0.1"}
+    request_headers = {"User-Agent": "WinBridge/1.3"}
     request_headers.update(headers or {})
     request = urllib.request.Request(url, headers=request_headers, method=method)
     host = (urllib.parse.urlsplit(url).hostname or "").lower()
@@ -410,6 +410,31 @@ class ComponentManager:
         # Mirror prefix that last worked for a GitHub download (None = direct)
         self._github_mirror = None
 
+    def _wine_for_bottle(self, bottle_path: str):
+        """The Wine binary this bottle is actually configured to use.
+
+        A bottle may point at a downloaded runner (Wine 11/Soda/Proton), while
+        ``config.wine_path`` is only the system/default fallback. Component
+        installs must use the bottle's Wine so registry writes and winetricks
+        target the same prefix build; otherwise they fail outright once the
+        system Wine is removed.
+        """
+        from .wine import Wine
+
+        selected = ""
+        try:
+            meta = json.loads(
+                (Path(bottle_path) / "bottle.json").read_text("utf-8"))
+            selected = meta.get("wine_path") or ""
+        except (OSError, ValueError):
+            selected = ""
+
+        candidates = [selected, self.config.wine_path]
+        for candidate in candidates:
+            if candidate and Path(candidate).exists():
+                return Wine(candidate)
+        return Wine(selected or self.config.wine_path or "wine")
+
     def _find_winetricks(self) -> str:
         """Find the winetricks binary on the system."""
         # Resolve the project-integrated winetricks path (full clone, metadata/ shipped)
@@ -581,8 +606,7 @@ class ComponentManager:
         if not wanted:
             return True, ""
         try:
-            from .wine import Wine
-            wine = Wine(self.config.wine_path)
+            wine = self._wine_for_bottle(bottle_path)
         except Exception as e:
             return False, f"无法移除 DLL 覆盖: {e}"
 
@@ -624,9 +648,8 @@ class ComponentManager:
         Returns the removed overrides so the caller can restore them.
         """
         try:
-            from .wine import Wine
-            wine = Wine(self.config.wine_path)
-            applied = self._read_dll_overrides(wine, bottle_path)
+            applied = self._read_dll_overrides(
+                self._wine_for_bottle(bottle_path), bottle_path)
         except Exception:
             return {}
         suspended = {name: mode for name, mode in applied.items()
@@ -807,8 +830,7 @@ class ComponentManager:
         if not wanted:
             return True, ""
         try:
-            from .wine import Wine
-            wine = Wine(self.config.wine_path)
+            wine = self._wine_for_bottle(bottle_path)
         except Exception as e:
             return False, f"无法写入 DLL 覆盖: {e}"
 
@@ -1306,10 +1328,11 @@ class ComponentManager:
                     continue  # a 64-bit redistributable is useless in a win32 prefix
                 if progress_callback:
                     progress_callback(0, 100, f"正在安装 {label} ({pkg_name}) 到容器...")
-                env = os.environ.copy()
+                wine = self._wine_for_bottle(bottle_path)
+                env = wine.environment()
                 env["WINEPREFIX"] = bottle_path
                 env["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d"
-                wine_bin = self.config.wine_path or "/usr/bin/wine"
+                wine_bin = wine.wine_path
                 env["WINE"] = wine_bin
                 cmd = [wine_bin, local_path] + install_args.split()
                 try:
@@ -1841,9 +1864,7 @@ class ComponentManager:
 
         # Register every font in the bottle's Fonts dir
         try:
-            from .wine import Wine
-            cfg = self.config
-            w = Wine(cfg.wine_path)
+            w = self._wine_for_bottle(bottle_path)
             registered = w.register_all_fonts(bottle_path)
         except Exception:
             registered = 0
@@ -2005,14 +2026,19 @@ class ComponentManager:
         # which crash with 0xe06d7363 when app-wide overrides are active.
         suspended = self._suspend_app_overrides(bottle_path)
         try:
-            env = os.environ.copy()
+            wine = self._wine_for_bottle(bottle_path)
+            env = wine.environment()
             env["WINEPREFIX"] = bottle_path
             # Disable mono/gecko auto-install (wineboot tries to download
             # them on first run, which hangs in CN networks). Also suppress
             # wine debug output to reduce noise on the pipe.
             env["WINEDLLOVERRIDES"] = "mscoree=d;winemenubuilder.exe=d"
             env["WINEDEBUG"] = "-all,fixme-all"
-            env["WINE"] = self.config.wine_path or "/usr/bin/wine"
+            env["WINE"] = wine.wine_path
+            # winetricks finds the server next to $WINE, but setting it
+            # explicitly keeps a system wineserver from being picked when
+            # the bottle uses a downloaded runner.
+            env["WINESERVER"] = wine.wineserver_path
             # Verbs that need their own override set (dotnet48 runs its
             # installer with fusion=b and must not have mscoree disabled).
             env.update(info.get("winetricks_env", {}))
@@ -2253,9 +2279,7 @@ class ComponentManager:
             applied_overrides = {}
             if success:
                 try:
-                    from .wine import Wine
-                    cfg = self.config
-                    w = Wine(cfg.wine_path)
+                    w = self._wine_for_bottle(bottle_path)
                     w.register_all_fonts(bottle_path)
                     applied_overrides = self._read_dll_overrides(w, bottle_path)
                 except Exception:
@@ -2293,8 +2317,8 @@ class ComponentManager:
         if not version:
             return
         try:
-            from .wine import Wine
-            Wine(self.config.wine_path).set_win_version(bottle_path, version)
+            self._wine_for_bottle(bottle_path).set_win_version(bottle_path,
+                                                               version)
         except Exception:
             pass
 

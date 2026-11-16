@@ -10,6 +10,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from winbridge.core import sandbox
@@ -183,6 +184,70 @@ class CreateDialogRadioGroupsTests(unittest.TestCase):
         self.assertFalse(dialog.arch_64.isChecked())
         self.assertTrue(dialog.runtime_sandbox.isChecked())
         self.assertEqual(dialog.get_sandbox(), "flatpak")
+
+    def test_windows_version_labels_are_user_friendly(self):
+        from winbridge.core.bottle import windows_version_label
+        from winbridge.ui.dialogs import CreateBottleDialog
+
+        self.assertEqual(windows_version_label("win81"), "win8.1")
+        self.assertEqual(windows_version_label("win2k"), "win2000")
+        self.assertEqual(windows_version_label("win10"), "win10")
+
+        dialog = CreateBottleDialog()
+        displayed = [dialog.windows_version_combo.itemText(index)
+                     for index in range(dialog.windows_version_combo.count())]
+        self.assertIn("win8.1", displayed)
+        self.assertIn("win2000", displayed)
+        self.assertNotIn("win81", displayed)
+        self.assertNotIn("win2k", displayed)
+        # The combo still stores the key Wine understands.
+        self.assertEqual(dialog.windows_version_combo.currentData(), "win10")
+        index = dialog.windows_version_combo.findText("win8.1")
+        self.assertEqual(dialog.windows_version_combo.itemData(index), "win81")
+
+
+class WineManagerDialogTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        try:
+            from PyQt5.QtWidgets import QApplication
+        except ImportError:  # pragma: no cover
+            raise unittest.SkipTest("PyQt5 未安装")
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_lists_system_and_downloaded_wine(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            system_wine = root / "system" / "bin" / "wine"
+            system_wine.parent.mkdir(parents=True)
+            system_wine.write_text("")
+
+            runner = root / "runners" / "soda-soda-11.0-10"
+            (runner / "bin").mkdir(parents=True)
+            (runner / "bin" / "wine").write_text("")
+            (runner / "runner.json").write_text(json.dumps({
+                "id": "soda", "label": "Soda 11", "version": "soda-11.0-10",
+                "wine_path": str(runner / "bin" / "wine"),
+            }), encoding="utf-8")
+
+            config = SimpleNamespace(
+                wine_path=str(system_wine), wine_arch="win64",
+                data_dir=root, cache_dir=root / "cache",
+                components_dir=root / "components",
+                bottles_dir=root / "bottles",
+                get=lambda _key, default=None: default)
+
+            from winbridge.ui.dialogs import WineManagerDialog
+            dialog = WineManagerDialog(config)
+            names = [dialog.installed_table.item(row, 0).text()
+                     for row in range(dialog.installed_table.rowCount())]
+            self.assertIn("系统 Wine", names)
+            self.assertIn("Soda 11", names)
+
+            self.assertFalse(dialog.btn_delete_wine.isEnabled())
+            dialog.installed_table.selectRow(0)
+            self.assertTrue(dialog.btn_delete_wine.isEnabled())
 
 
 if __name__ == "__main__":

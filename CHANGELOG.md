@@ -1,5 +1,58 @@
 # 更新日志
 
+## [1.3] - 2026-11-16
+
+### Wine 版本管理
+
+- **新增「Wine 版本管理」窗口**：工具菜单、新建容器和容器配置页都能打开，可下载
+  **Wine 11**、**Soda 11**、**Proton 11**、**Wine-GE** 四种自包含运行时；下载走
+  GitHub 镜像链，安装到 `~/.local/share/winbridge/runners/`，每个容器可单独选择
+- **启动时自动检查已安装运行时的上游新版本**：有新版时弹窗列出「旧版本 → 新版本」，
+  支持全部更新、进度与取消；没有更新时只在状态栏提示
+- **新增删除 Wine 版本**：下载版只允许删 WinBridge 管理的运行时目录并清理压缩包缓存；
+  有容器正在使用时先提示切换。系统 Wine 若由包管理器安装，会通过
+  `pkexec apt-get remove` 卸载对应包，非包管理的便携树才走 `pkexec rm -rf`，
+  并拒绝 `/usr`、`/etc`、`/var`、`/boot` 等系统目录
+- **组件安装/卸载改用容器当前选择的 Wine**：`bottle.json` 的 `wine_path` 优先，
+  缺失才回退系统 Wine；winetricks 的 `WINE`/`WINESERVER`、DLL 覆盖、字体注册和
+  redist 安装都跟随该运行时，删除系统 Wine 后宿主模式的 runner 容器仍能装组件
+- **便携运行时自动补 `LD_LIBRARY_PATH`**；发行版 Wine 不加，避免顶掉系统库
+- `Soda 11` 实测可运行平衡球（D3D8）；`GE-Proton11` 在该游戏会报
+  `No render driver found`，属于 Proton 内置 d3d8 的兼容差异
+
+### 注册表
+
+- **注册表浏览器补齐编辑能力**：新建值、编辑值、删除值，支持
+  `REG_SZ / REG_EXPAND_SZ / REG_DWORD / REG_QWORD / REG_MULTI_SZ / REG_BINARY`；
+  新增重命名项、导出 `.reg`、按项/值名查找，值表增加「类型」列，双击可编辑
+- **修复新建/删除注册表项可能操作到错误键**：树内路径使用双反斜杠，传给 `wine reg`
+  前统一转成单反斜杠
+- 兼容 Wine 11 的 `str(N):` 值格式，同时保留旧版 `hex(N):` 解析
+
+### 任务管理器
+
+- **flatpak 沙箱容器也支持任务管理器**：按宿主 `/proc/<pid>/environ` 的 `WINEPREFIX`
+  归属进程，并剔除 `bwrap`/`flatpak`/`bash` 等包装进程
+- **修复刷新时选中的进程被取消选中**：刷新前记住 PID 与滚动位置，重建表格后恢复；
+  只有进程真的退出才取消选中
+
+### 快捷方式与文件选择
+
+- **修复强制删除目录误报「没找到卸载程序」**：扩展应用目录识别到
+  `AppData\Local\<App>`、`ProgramData\<App>`、`C:\<App>`、`steamapps\common\<Game>`
+  等常见布局；共享目录仍拒绝删除，无法定位时改为明确提示
+- **右键快捷方式新增「打开程序所在目录」**
+- **文件选择改用系统原生文件对话框**，不再强制使用自绘 QFileDialog
+
+### 组件与界面
+
+- **打开应用时的组件检测只检查四项**：Core Fonts、CJK Fonts、All Fonts、
+  .NET Framework 4.8，且只安装缺失项；flatpak 容器提示先切宿主安装，避免连续失败
+- **Windows 版本显示改为 `win8.1`、`win2000`**：界面显示名与 `winecfg -v` 使用的
+  `win81`、`win2k` 存储键分离，旧容器可正确回显
+- README 的「安装wine」章节改为「安装 / 管理 Wine」，补充内置下载、切换、删除
+  与启动更新检查说明
+
 ## [1.2.5] - 2026-11-15
 
 ### 快捷方式

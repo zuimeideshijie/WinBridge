@@ -1,6 +1,8 @@
 """Bottle detail view widget — Windows-native styled detail panel."""
 
 import os
+import shlex
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -18,10 +20,12 @@ from PyQt5.QtWidgets import (
     QStyle,
 )
 
-from ..core import shortcuts
+from ..core import registry, shortcuts
 from ..core.bottle import (Bottle, BottleManager, ENVIRONMENT_LABELS,
-                           environment_key, environment_label)
+                           WINDOWS_VERSIONS, environment_key,
+                           environment_label, windows_version_label)
 from ..core.wine import Wine
+from ..core.wine_runtimes import WineRuntimeManager
 from ..core.config import Config
 from ..core.download import ComponentManager
 from ..core.sandbox import app_installed
@@ -221,6 +225,9 @@ class BottleDetailWidget(QWidget):
         self.tabs.addTab(self.registry_tab, "注册表")
         self._registry_loaded = False
         self._reg_index = {}
+        self._reg_root_items = {}
+        self._reg_current_values = []
+        self._filling_wine = False
         self._registry_window = None
         self._last_tab_index = 0
 
@@ -525,11 +532,8 @@ class BottleDetailWidget(QWidget):
         ver_layout.addWidget(ver_label)
 
         self.winver_combo = QComboBox()
-        self.winver_combo.addItems([
-            "win11", "win10", "win81", "win8", "win7", "vista",
-            "win2003", "winxp", "win2k", "winme", "win98",
-            "win95"
-        ])
+        for version in WINDOWS_VERSIONS:
+            self.winver_combo.addItem(windows_version_label(version), version)
         self.winver_combo.setFixedWidth(180)
         ver_layout.addWidget(self.winver_combo)
 
@@ -539,6 +543,27 @@ class BottleDetailWidget(QWidget):
         ver_layout.addWidget(btn_apply_winver)
         ver_layout.addStretch()
         section_layout.addLayout(ver_layout)
+
+        # Wine version: system Wine or a downloaded runner
+        wine_layout = QHBoxLayout()
+        wine_layout.setSpacing(8)
+        wine_label = QLabel("Wine 版本")
+        wine_label.setObjectName("fieldLabel")
+        wine_layout.addWidget(wine_label)
+
+        self.wine_combo = QComboBox()
+        self.wine_combo.setMinimumWidth(240)
+        self.wine_combo.currentIndexChanged.connect(
+            self.on_bottle_wine_changed)
+        wine_layout.addWidget(self.wine_combo)
+
+        self.btn_download_wine = QPushButton("管理 Wine…")
+        self.btn_download_wine.setObjectName("btnDefault")
+        self.btn_download_wine.setToolTip("下载、更新或删除 Wine 版本")
+        self.btn_download_wine.clicked.connect(self.open_wine_manager)
+        wine_layout.addWidget(self.btn_download_wine)
+        wine_layout.addStretch()
+        section_layout.addLayout(wine_layout)
 
         # Separator
         sep = QFrame()
@@ -630,7 +655,7 @@ class BottleDetailWidget(QWidget):
         btn_refresh_reg.clicked.connect(self._refresh_registry_tree)
         toolbar.addWidget(btn_refresh_reg)
 
-        btn_new_folder = QPushButton("新建文件夹")
+        btn_new_folder = QPushButton("新建项")
         btn_new_folder.setObjectName("btnDefault")
         btn_new_folder.clicked.connect(lambda: self._add_registry_key(None))
         toolbar.addWidget(btn_new_folder)
@@ -645,10 +670,26 @@ class BottleDetailWidget(QWidget):
         btn_new64.clicked.connect(lambda: self._add_registry_key("64"))
         toolbar.addWidget(btn_new64)
 
+        btn_rename_key = QPushButton("重命名项")
+        btn_rename_key.setObjectName("btnDefault")
+        btn_rename_key.clicked.connect(self._rename_registry_key)
+        toolbar.addWidget(btn_rename_key)
+
+        btn_export_key = QPushButton("导出…")
+        btn_export_key.setObjectName("btnDefault")
+        btn_export_key.clicked.connect(self._export_registry_key)
+        toolbar.addWidget(btn_export_key)
+
         btn_del_key = QPushButton("删除选中项")
         btn_del_key.setObjectName("btnDanger")
         btn_del_key.clicked.connect(self._delete_registry_key)
         toolbar.addWidget(btn_del_key)
+
+        self.reg_search = QLineEdit()
+        self.reg_search.setPlaceholderText("查找项或值…")
+        self.reg_search.setMaximumWidth(170)
+        self.reg_search.returnPressed.connect(self._find_registry)
+        toolbar.addWidget(self.reg_search)
 
         self.reg_source_label = QLabel("浏览: user.reg + system.reg")
         self.reg_source_label.setObjectName("hint")
@@ -687,12 +728,34 @@ class BottleDetailWidget(QWidget):
         self.reg_key_path.setWordWrap(True)
         value_layout.addWidget(self.reg_key_path)
 
-        self.reg_value_table = QTableWidget(0, 2)
-        self.reg_value_table.setHorizontalHeaderLabels(["名称", "数据"])
+        value_toolbar = QHBoxLayout()
+        value_toolbar.setSpacing(8)
+        self.btn_new_value = QPushButton("新建值")
+        self.btn_new_value.setObjectName("btnDefault")
+        self.btn_new_value.clicked.connect(self._add_registry_value)
+        value_toolbar.addWidget(self.btn_new_value)
+
+        self.btn_edit_value = QPushButton("编辑值")
+        self.btn_edit_value.setObjectName("btnDefault")
+        self.btn_edit_value.clicked.connect(self._edit_registry_value)
+        value_toolbar.addWidget(self.btn_edit_value)
+
+        self.btn_del_value = QPushButton("删除值")
+        self.btn_del_value.setObjectName("btnDanger")
+        self.btn_del_value.clicked.connect(self._delete_registry_value)
+        value_toolbar.addWidget(self.btn_del_value)
+        value_toolbar.addStretch()
+        value_layout.addLayout(value_toolbar)
+
+        self.reg_value_table = QTableWidget(0, 3)
+        self.reg_value_table.setHorizontalHeaderLabels(["名称", "类型", "数据"])
         self.reg_value_table.horizontalHeader().setStretchLastSection(True)
         self.reg_value_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.reg_value_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.reg_value_table.setAlternatingRowColors(False)
         self.reg_value_table.verticalHeader().setVisible(False)
+        self.reg_value_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.reg_value_table.doubleClicked.connect(self._edit_registry_value)
         value_layout.addWidget(self.reg_value_table, 1)
 
         splitter.addWidget(self.reg_value_widget)
@@ -779,9 +842,11 @@ class BottleDetailWidget(QWidget):
         """Refresh the registry tree asynchronously (never blocks the UI)."""
         self._cancel_registry_load()
         self._reg_index = {}
+        self._reg_current_values = []
         self.reg_tree.clear()
         self.reg_value_table.setRowCount(0)
         self.reg_key_path.setText("")
+        self._update_registry_buttons(False)
 
         if not self.current_bottle:
             return
@@ -808,15 +873,6 @@ class BottleDetailWidget(QWidget):
         # materialising all ~17k keys at once freezes both windows.
         for i in range(self.reg_tree.topLevelItemCount()):
             self.reg_tree.topLevelItem(i).setExpanded(True)
-
-    def _parse_reg_key_path(self, line: str) -> str:
-        """Extract the key path from a .reg line like [Key\\Path] timestamp."""
-        start = line.find("[")
-        end = line.find("]")
-        if start < 0 or end < 0 or end <= start:
-            return ""
-        key_path = line[start + 1:end].strip()
-        return key_path
 
     def _build_registry_tree(self, key_paths: list):
         """Index the key paths and create only the two hive roots.
@@ -889,27 +945,64 @@ class BottleDetailWidget(QWidget):
     def _on_reg_item_clicked(self, item, column):
         """Handle clicking a registry tree item."""
         self.reg_value_table.setRowCount(0)
+        self._reg_current_values = []
         if item is None or not item.flags() & Qt.ItemIsSelectable:
+            self._update_registry_buttons(False)
             return  # the "加载中…" placeholder
 
         key_path = self._item_key_path(item)
-        self.reg_key_path.setText(f"[{key_path}]")
+        # Wine's own tools want single backslashes; the tree keeps doubled
+        # ones because that is how .reg files spell keys.
+        self.reg_key_path.setText(f"[{registry.win_reg_path(key_path)}]")
+        self._update_registry_buttons(True)
+        self._load_registry_values(key_path)
 
-        # Read values from the .reg file for this key (only the hive the
-        # key belongs to — user.reg for HKCU, system.reg for HKLM).
+    def _update_registry_buttons(self, has_key: bool):
+        for button in (self.btn_new_value, self.btn_edit_value,
+                       self.btn_del_value):
+            button.setEnabled(has_key)
+
+    def _reg_file_for(self, key_path: str) -> Path:
+        hive, _ = registry.split_key(key_path)
+        reg_name = "user.reg" if hive == "HKCU" else "system.reg"
+        return self.current_bottle.path / reg_name
+
+    def _load_registry_values(self, key_path: str):
+        """Fill the value table from the .reg file for one key."""
+        self.reg_value_table.setRowCount(0)
+        self._reg_current_values = []
         if not self.current_bottle:
             return
-
-        hive, _, bare_key = key_path.partition("\\\\")
-        reg_name = "user.reg" if hive == "HKCU" else "system.reg"
-        reg_path = self.current_bottle.path / reg_name
-        if not reg_path.exists():
-            return
+        reg_path = self._reg_file_for(key_path)
         try:
             text = reg_path.read_text(encoding="utf-8", errors="replace")
-            self._populate_values_for_key(text, bare_key)
-        except Exception:
-            pass
+        except OSError:
+            return
+        values = registry.parse_values(text, key_path)
+        self._reg_current_values = values
+        for index, value in enumerate(values):
+            row = self.reg_value_table.rowCount()
+            self.reg_value_table.insertRow(row)
+            name_item = QTableWidgetItem(value["display_name"])
+            name_item.setData(Qt.UserRole, index)
+            self.reg_value_table.setItem(row, 0, name_item)
+            self.reg_value_table.setItem(row, 1, QTableWidgetItem(value["type"]))
+            data_item = QTableWidgetItem(value["data"].replace("\n", " ⏎ "))
+            data_item.setToolTip(value["data"])
+            self.reg_value_table.setItem(row, 2, data_item)
+
+    def _selected_value_entry(self):
+        row = self.reg_value_table.currentRow()
+        if row < 0:
+            return None
+        item = self.reg_value_table.item(row, 0)
+        if item is None:
+            return None
+        index = item.data(Qt.UserRole)
+        try:
+            return self._reg_current_values[index]
+        except (IndexError, TypeError):
+            return None
 
     def _get_selected_reg_path(self) -> str:
         """Return the selected tree item's full registry path (HKCU\\… / HKLM\\…)."""
@@ -921,13 +1014,24 @@ class BottleDetailWidget(QWidget):
         while cur:
             parts.insert(0, cur.text(0))
             cur = cur.parent()
-        return "\\\\".join(parts)
+        return registry.SEP.join(parts)
+
+    def _run_reg(self, command: str) -> tuple:
+        """Run one ``reg`` command against the current bottle."""
+        try:
+            result = self.wine.run_cmd(
+                str(self.current_bottle.path), command, timeout=120)
+        except Exception as error:  # noqa: BLE001 - shown in the dialog
+            return False, str(error)
+        if result.returncode == 0:
+            return True, ""
+        return False, (result.stderr or result.stdout
+                       or "wine reg 返回非零").strip()[:400]
 
     def _add_registry_key(self, arch=None):
         """Create a new registry key under the selected key.
 
-        ``arch``: "32" → /reg:32, "64" → /reg:64, None → default view
-        (used by the "新建文件夹" button).
+        ``arch``: "32" → /reg:32, "64" → /reg:64, None → default view.
         """
         if not self.current_bottle:
             return
@@ -936,7 +1040,7 @@ class BottleDetailWidget(QWidget):
             QMessageBox.information(self, "提示", "请先在左侧选择一个注册表项。")
             return
         from PyQt5.QtWidgets import QInputDialog
-        title = "新建文件夹" if arch is None else f"新建项 ({arch}位)"
+        title = "新建项" if arch is None else f"新建项 ({arch}位)"
         new_name, ok = QInputDialog.getText(
             self, title, "新项名称:", QLineEdit.Normal, "")
         if not ok or not new_name.strip():
@@ -947,22 +1051,48 @@ class BottleDetailWidget(QWidget):
             QMessageBox.warning(self, "无效名称", "项名称不能包含 \\ [ ] = ; 字符。")
             return
 
-        new_path = parent + "\\\\" + new_name
-        reg_cmd = f"reg add \"{new_path}\" /f"
+        new_path = parent + registry.SEP + new_name
+        command = f"reg add {shlex.quote(registry.win_reg_path(new_path))} /f"
         if arch == "32":
-            reg_cmd += " /reg:32"
+            command += " /reg:32"
         elif arch == "64":
-            reg_cmd += " /reg:64"
-        try:
-            result = self.wine.run_cmd(str(self.current_bottle.path), reg_cmd, timeout=60)
-            if result.returncode == 0:
-                QMessageBox.information(self, "完成", f"已创建注册表项：\n{new_path}")
-                self._refresh_registry_tree()
-            else:
-                QMessageBox.warning(self, "创建失败",
-                    (result.stderr or result.stdout or "wine reg add 返回非零").strip()[:300])
-        except Exception as e:
-            QMessageBox.warning(self, "创建失败", str(e))
+            command += " /reg:64"
+        ok, error = self._run_reg(command)
+        if ok:
+            self._refresh_registry_tree()
+            QTimer.singleShot(400, lambda: self._select_registry_match(new_path))
+        else:
+            QMessageBox.warning(self, "创建失败", error)
+
+    def _rename_registry_key(self):
+        """Rename the selected key (copy subtree, then delete the old one)."""
+        old_path = self._get_selected_reg_path()
+        if not old_path:
+            QMessageBox.information(self, "提示", "请先在左侧选择一个注册表项。")
+            return
+        parent, sep, leaf = old_path.rpartition(registry.SEP)
+        if not sep:
+            QMessageBox.information(self, "提示", "根键不能重命名。")
+            return
+        from PyQt5.QtWidgets import QInputDialog
+        new_name, ok = QInputDialog.getText(
+            self, "重命名项", "新名称:", QLineEdit.Normal, leaf)
+        new_name = new_name.strip()
+        if not ok or not new_name or new_name == leaf:
+            return
+        if any(c in new_name for c in "\\[]=;"):
+            QMessageBox.warning(self, "无效名称", "项名称不能包含 \\ [ ] = ; 字符。")
+            return
+        new_path = parent + registry.SEP + new_name
+        command = (f"reg copy {shlex.quote(registry.win_reg_path(old_path))} "
+                   f"{shlex.quote(registry.win_reg_path(new_path))} /s /f && "
+                   f"reg delete {shlex.quote(registry.win_reg_path(old_path))} /f")
+        ok, error = self._run_reg(command)
+        if ok:
+            self._refresh_registry_tree()
+            QTimer.singleShot(400, lambda: self._select_registry_match(new_path))
+        else:
+            QMessageBox.warning(self, "重命名失败", error)
 
     def _delete_registry_key(self):
         """Delete the selected registry key (and its subkeys)."""
@@ -974,67 +1104,237 @@ class BottleDetailWidget(QWidget):
             return
         reply = QMessageBox.warning(
             self, "确认删除",
-            f"确定要删除注册表项吗？\n{target}\n\n其下的所有子项和值将一并删除！",
+            f"确定要删除注册表项吗？\n{registry.win_reg_path(target)}\n\n"
+            "其下的所有子项和值将一并删除！",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
         if reply != QMessageBox.Yes:
             return
-        try:
-            result = self.wine.run_cmd(
-                str(self.current_bottle.path),
-                f"reg delete \"{target}\" /f", timeout=60)
-            if result.returncode == 0:
-                QMessageBox.information(self, "完成", f"已删除注册表项：\n{target}")
-                self._refresh_registry_tree()
-            else:
-                QMessageBox.warning(self, "删除失败",
-                    (result.stderr or result.stdout or "wine reg delete 返回非零").strip()[:300])
-        except Exception as e:
-            QMessageBox.warning(self, "删除失败", str(e))
+        ok, error = self._run_reg(
+            f"reg delete {shlex.quote(registry.win_reg_path(target))} /f")
+        if ok:
+            self._refresh_registry_tree()
+        else:
+            QMessageBox.warning(self, "删除失败", error)
 
-    def _populate_values_for_key(self, reg_text: str, target_key: str):
-        """Parse .reg text and populate values for a specific key."""
-        in_target = False
-        for line in reg_text.split("\n"):
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or stripped.startswith(";"):
-                continue
+    def _export_registry_key(self):
+        """Export the selected key to a .reg file."""
+        key_path = self._get_selected_reg_path()
+        if not key_path:
+            QMessageBox.information(self, "提示", "请先在左侧选择一个注册表项。")
+            return
+        _, _, leaf = key_path.rpartition(registry.SEP)
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出注册表项",
+            str(Path.home() / f"{leaf or 'registry'}.reg"),
+            "注册表文件 (*.reg);;所有文件 (*)")
+        if not path:
+            return
+        # Wine's reg only understands Windows paths for the output file, so
+        # export into the prefix first and move the result to the chosen path.
+        temp_name = f"winbridge-export-{os.getpid()}.reg"
+        temp_host = self.current_bottle.path / "drive_c" / temp_name
+        temp_win = f"C:\\{temp_name}"
+        ok, error = self._run_reg(
+            f"reg export {shlex.quote(registry.win_reg_path(key_path))} "
+            f"{shlex.quote(temp_win)} /y")
+        if ok:
+            try:
+                shutil.move(str(temp_host), str(path))
+            except OSError as move_error:
+                ok, error = False, str(move_error)
+        if ok:
+            QMessageBox.information(self, "导出完成", f"已导出到：\n{path}")
+        else:
+            try:
+                temp_host.unlink()
+            except OSError:
+                pass
+            QMessageBox.warning(self, "导出失败", error)
 
-            if stripped.startswith("["):
-                current_key = self._parse_reg_key_path(stripped)
-                in_target = (current_key == target_key)
-                continue
+    def _add_registry_value(self):
+        key_path = self._get_selected_reg_path()
+        if not key_path:
+            QMessageBox.information(self, "提示", "请先在左侧选择一个注册表项。")
+            return
+        from .dialogs import RegistryValueDialog
+        dialog = RegistryValueDialog(self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        name, type_name, data = dialog.get_result()
+        self._write_registry_value(key_path, name, type_name, data, "新建")
 
-            if not in_target:
-                continue
+    def _edit_registry_value(self, *_args):
+        key_path = self._get_selected_reg_path()
+        entry = self._selected_value_entry()
+        if not key_path or entry is None:
+            QMessageBox.information(self, "提示", "请先选择一个注册表值。")
+            return
+        from .dialogs import RegistryValueDialog
+        dialog = RegistryValueDialog(
+            self, name=entry["name"], type_name=entry["type"],
+            data=entry["data"], editing=True)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        name, type_name, data = dialog.get_result()
+        self._write_registry_value(key_path, name, type_name, data, "修改")
 
-            if stripped.startswith("\"") or stripped.startswith("@"):
-                # Value line: "name"=data or @=data
-                eq_pos = stripped.find("=")
-                if eq_pos < 0:
+    def _write_registry_value(self, key_path: str, name: str,
+                              type_name: str, data: str, action: str):
+        args, error = registry.add_value_args(name, type_name, data)
+        if error:
+            QMessageBox.warning(self, f"{action}失败", error)
+            return
+        command = ("reg add "
+                   + shlex.quote(registry.win_reg_path(key_path)) + " "
+                   + " ".join(shlex.quote(arg) for arg in args))
+        ok, error = self._run_reg(command)
+        if ok:
+            self._load_registry_values(key_path)
+        else:
+            QMessageBox.warning(self, f"{action}失败", error)
+
+    def _delete_registry_value(self):
+        key_path = self._get_selected_reg_path()
+        entry = self._selected_value_entry()
+        if not key_path or entry is None:
+            QMessageBox.information(self, "提示", "请先选择一个注册表值。")
+            return
+        reply = QMessageBox.question(
+            self, "删除值",
+            f"确定删除值「{entry['display_name']}」吗？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        selector = (f"/ve" if not entry["name"]
+                    else f"/v {shlex.quote(entry['name'])}")
+        ok, error = self._run_reg(
+            f"reg delete {shlex.quote(registry.win_reg_path(key_path))} "
+            f"{selector} /f")
+        if ok:
+            self._load_registry_values(key_path)
+        else:
+            QMessageBox.warning(self, "删除失败", error)
+
+    # ------------------------------------------------------------------
+    # search
+    # ------------------------------------------------------------------
+    def _collect_registry_matches(self, term: str, limit: int = 300) -> list:
+        """Keys and values whose name contains ``term`` (case-insensitive)."""
+        needle = term.lower()
+        matches = []
+
+        def walk(node, prefix):
+            for name, children in node.items():
+                if len(matches) >= limit:
+                    return
+                path = f"{prefix}{registry.SEP}{name}"
+                if needle in name.lower():
+                    matches.append((path, ""))
+                walk(children, path)
+
+        for root_name in self._reg_root_items:
+            walk(self._reg_index.get(root_name, {}), root_name)
+
+        # Value names are not part of the key index, so scan the two files.
+        if self.current_bottle:
+            for hive, reg_name in (("HKCU", "user.reg"), ("HKLM", "system.reg")):
+                try:
+                    text = (self.current_bottle.path / reg_name).read_text(
+                        encoding="utf-8", errors="replace")
+                except OSError:
                     continue
+                current = ""
+                for line in text.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("["):
+                        end = stripped.find("]")
+                        if end > 1:
+                            current = hive + registry.SEP + stripped[1:end]
+                        continue
+                    if not current or "=" not in stripped:
+                        continue
+                    head = stripped.split("=", 1)[0].strip()
+                    value_name = ("" if head == "@"
+                                  else head.strip('"'))
+                    if needle in value_name.lower():
+                        if len(matches) >= limit:
+                            break
+                        matches.append((current, value_name))
+        return matches
 
-                name = stripped[:eq_pos].strip()
-                data = stripped[eq_pos + 1:].strip()
+    def _find_registry(self):
+        """Jump to a key (or value) in the registry tree."""
+        term = self.reg_search.text().strip()
+        if not term:
+            return
+        if not self._reg_index:
+            QMessageBox.information(self, "查找", "注册表还没有加载完成。")
+            return
+        matches = self._collect_registry_matches(term)
+        if not matches:
+            QMessageBox.information(self, "查找", f"没有找到包含「{term}」的项或值。")
+            return
 
-                # Clean up name
-                if name == "@":
-                    name = "(默认)"
-                elif name.startswith("\"") and name.endswith("\""):
-                    name = name[1:-1]
+        key_path, value_name = matches[0]
+        if len(matches) > 1:
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"查找结果（{len(matches)}）")
+            dialog.resize(720, 420)
+            layout = QVBoxLayout(dialog)
+            result_list = QListWidget()
+            for path, name in matches:
+                label = registry.win_reg_path(path)
+                if name:
+                    label += f"    值: {name or '(默认)'}"
+                result_list.addItem(label)
+            result_list.setCurrentRow(0)
+            layout.addWidget(result_list, 1)
+            buttons = QDialogButtonBox(
+                QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            result_list.itemDoubleClicked.connect(lambda _item: dialog.accept())
+            layout.addWidget(buttons)
+            if dialog.exec_() != QDialog.Accepted:
+                return
+            index = result_list.currentRow()
+            if index < 0:
+                return
+            key_path, value_name = matches[index]
 
-                # Clean up data
-                if data.startswith("\"") and data.endswith("\""):
-                    data = data[1:-1]
-                elif data.startswith("dword:"):
-                    data = f"0x{data[6:]}"
-                elif data.startswith("hex"):
-                    data = "(二进制数据)"
+        self._select_registry_match(key_path, value_name)
 
-                row = self.reg_value_table.rowCount()
-                self.reg_value_table.insertRow(row)
-                self.reg_value_table.setItem(row, 0, QTableWidgetItem(name))
-                self.reg_value_table.setItem(row, 1, QTableWidgetItem(data))
+    def _select_registry_match(self, key_path: str, value_name: str = None):
+        """Expand the tree down to ``key_path`` and select it."""
+        parts = key_path.split(registry.SEP)
+        if not parts:
+            return
+        item = self._reg_root_items.get(parts[0])
+        if item is None:
+            return
+        for part in parts[1:]:
+            if item.data(0, Qt.UserRole + 1):
+                self._on_reg_item_expanded(item)
+            child = None
+            for index in range(item.childCount()):
+                candidate = item.child(index)
+                if candidate.text(0) == part:
+                    child = candidate
+                    break
+            if child is None:
+                break
+            item = child
+            item.setExpanded(True)
+        self.reg_tree.setCurrentItem(item)
+        self.reg_tree.scrollToItem(item)
+        self._on_reg_item_clicked(item, 0)
+        if value_name is not None:
+            for row in range(self.reg_value_table.rowCount()):
+                cell = self.reg_value_table.item(row, 0)
+                if cell and cell.text() == (value_name or "(默认)"):
+                    self.reg_value_table.selectRow(row)
+                    break
 
     def set_controls_enabled(self, enabled: bool):
         """Enable or disable controls."""
@@ -1074,6 +1374,10 @@ class BottleDetailWidget(QWidget):
     def load_bottle(self, bottle: Bottle):
         """Load a bottle for display."""
         self.current_bottle = bottle
+        # A bottle may use a downloaded runner instead of the system Wine;
+        # registry/taskmgr/winecfg must use the same binary as the games.
+        self.wine = bottle.wine
+        self.refresh_wine_versions()
         self.set_controls_enabled(True)
 
         # Update title
@@ -1084,7 +1388,7 @@ class BottleDetailWidget(QWidget):
         self._update_info_card(self.card_arch, "架构",
                                bottle.arch.replace("win", "Win"))
         self._update_info_card(self.card_winver, "Windows 版本",
-                               bottle.windows_version)
+                               windows_version_label(bottle.windows_version))
         self._update_info_card(self.card_env, "环境",
                                environment_label(bottle.environment))
         self._update_info_card(self.card_size, "大小",
@@ -1104,7 +1408,10 @@ class BottleDetailWidget(QWidget):
             self.components_list.addItem("(暂无已安装组件)")
 
         # Configuration tab
-        idx = self.winver_combo.findText(bottle.windows_version)
+        idx = self.winver_combo.findData(bottle.windows_version)
+        if idx < 0:
+            idx = self.winver_combo.findText(
+                windows_version_label(bottle.windows_version))
         if idx >= 0:
             self.winver_combo.setCurrentIndex(idx)
         idx = self.env_combo.findData(environment_key(bottle.environment))
@@ -1236,6 +1543,7 @@ class BottleDetailWidget(QWidget):
             return
         menu = QMenu(self.shortcuts_list)
         action_open = menu.addAction("打开")
+        action_folder = menu.addAction("打开程序所在目录")
         action_rename = menu.addAction("重命名")
         action_desktop = menu.addAction("添加到桌面")
         menu.addSeparator()
@@ -1247,6 +1555,8 @@ class BottleDetailWidget(QWidget):
         chosen = menu.exec_(self.shortcuts_list.mapToGlobal(pos))
         if chosen is action_open:
             self._run_shortcut(item)
+        elif chosen is action_folder:
+            self._open_shortcut_folder(item)
         elif chosen is action_rename:
             self._rename_shortcut(item)
         elif chosen is action_desktop:
@@ -1383,11 +1693,12 @@ class BottleDetailWidget(QWidget):
             plan = shortcuts.plan_uninstall(target, self.current_bottle.path)
         if not plan:
             QMessageBox.information(
-                self, "无法卸载",
-                "没有找到「" + name + "」自带的卸载程序，而且它不在 "
-                "Program Files、ProgramData 或 AppData\\Local\\Programs "
-                "等独立目录中。\n\n"
-                "系统自带程序（notepad、winecfg 等）请通过容器或组件管理。")
+                self, "无法定位应用目录",
+                f"「{name}」不是安装在一个可以单独删除的目录里\n"
+                "（例如直接放在 Program Files 根目录、Windows 目录，"
+                "或者在容器外的 Linux 路径）。\n\n"
+                f"程序位置：\n{target}\n\n"
+                "可先用「打开程序所在目录」查看，再手动删除。")
             return
 
         size = float(plan["size"])
@@ -1461,6 +1772,27 @@ class BottleDetailWidget(QWidget):
             return f'"{sys.executable}" "{script}"'
         return f'"{script}"'
 
+    def _open_shortcut_folder(self, item):
+        """Open the program's folder in the system file manager."""
+        target = item.data(Qt.UserRole)
+        if not target:
+            return
+        folder = Path(target).parent
+        if not folder.is_dir():
+            QMessageBox.warning(self, "目录不存在", f"找不到目录：\n{folder}")
+            return
+        try:
+            if shutil.which("xdg-open"):
+                command = ["xdg-open", str(folder)]
+            elif shutil.which("gio"):
+                command = ["gio", "open", str(folder)]
+            else:
+                raise FileNotFoundError("未找到 xdg-open 或 gio")
+            subprocess.Popen(
+                command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as error:  # noqa: BLE001 - shown to the user
+            QMessageBox.warning(self, "无法打开目录", str(error))
+
     def _run_shortcut(self, item):
         """Run a shortcut from the shortcuts list."""
         target = item.data(Qt.UserRole)
@@ -1484,24 +1816,10 @@ class BottleDetailWidget(QWidget):
             self.bottle_updated.emit(self.current_bottle.name)
 
     def _get_open_file_path(self, title: str, filter_str: str) -> str:
-        """Open a light-themed file dialog and return the selected path."""
-        from PyQt5.QtCore import QUrl
-        from PyQt5.QtWidgets import QDialog
-        dialog = QFileDialog(self, title, str(Path.home()), filter_str)
-        dialog.setFileMode(QFileDialog.ExistingFile)
-        dialog.setAcceptMode(QFileDialog.AcceptOpen)
-        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
-        dialog.setSidebarUrls([
-            QUrl.fromLocalFile(str(Path.home())),
-            QUrl.fromLocalFile("/"),
-            QUrl.fromLocalFile("/media/zuimeideshijie"),
-            QUrl.fromLocalFile("/mnt"),
-        ])
-        if dialog.exec_() == QDialog.Accepted:
-            paths = dialog.selectedFiles()
-            if paths:
-                return paths[0]
-        return ""
+        """Open the system's own file picker and return the selected path."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, title, str(Path.home()), filter_str)
+        return path
 
     def browse_exe(self):
         """Browse for an executable."""
@@ -1540,12 +1858,6 @@ class BottleDetailWidget(QWidget):
 
     def open_task_manager(self):
         """Open the Windows-style Task Manager for the current bottle."""
-        if self.current_bottle and self.current_bottle.sandbox == "flatpak":
-            QMessageBox.information(
-                self, "任务管理器",
-                "该容器运行在 flatpak 沙箱中，沙箱内的进程对宿主不可见。\n"
-                "请在容器「运行环境」里切回宿主机后查看。")
-            return
         bottle_path = str(self.current_bottle.path) if self.current_bottle else None
         dialog = TaskManagerDialog(self.wine, bottle_path, self)
         dialog.show()
@@ -1612,14 +1924,76 @@ class BottleDetailWidget(QWidget):
                 QMessageBox.warning(self, "重命名失败",
                     "无法重命名容器。可能同名容器已存在或原容器不存在。")
 
+    def on_bottle_wine_changed(self, index: int):
+        """Save the selected Wine binary for this bottle."""
+        if self._filling_wine or not self.current_bottle:
+            return
+        path = self.wine_combo.currentData() or ""
+        if path == self.current_bottle._meta.get("wine_path", ""):
+            return
+        # A wineserver started with the old binary must not keep the prefix.
+        try:
+            self.wine.kill(str(self.current_bottle.path))
+        except Exception:
+            pass
+        current_bottle = self.current_bottle
+        current_bottle.wine_path = path
+        self.wine = current_bottle.wine
+        self.bottle_updated.emit(current_bottle.name)
+        label = self.wine_combo.currentText() if path else "系统默认 Wine"
+        QMessageBox.information(
+            self, "Wine 版本已切换",
+            f"容器「{current_bottle.name}」将使用：{label}\n\n"
+            "正在运行的程序需要重新启动；注册表、任务管理器等工具也会使用"
+            "新版本。")
+
+    def refresh_wine_versions(self, select_path: str = None,
+                              apply_selection: bool = False):
+        """Rebuild the Wine selector from the installed runners."""
+        if not hasattr(self, "wine_combo"):
+            return
+        if select_path is None and self.current_bottle is not None:
+            select_path = self.current_bottle._meta.get("wine_path", "")
+
+        self._filling_wine = True
+        self.wine_combo.blockSignals(True)
+        try:
+            self.wine_combo.clear()
+            if not hasattr(self, "_system_wine_label"):
+                self._system_wine_label = Wine(self.config.wine_path).version
+            self.wine_combo.addItem(
+                f"系统默认 Wine（{self._system_wine_label}）", "")
+            for runner in WineRuntimeManager(self.config).installed():
+                suffix = f" {runner['version']}" if runner["version"] else ""
+                self.wine_combo.addItem(
+                    f"{runner['label']}{suffix}", runner["wine_path"])
+            index = self.wine_combo.findData(select_path or "")
+            self.wine_combo.setCurrentIndex(index if index >= 0 else 0)
+        finally:
+            self.wine_combo.blockSignals(False)
+            self._filling_wine = False
+
+        if apply_selection:
+            self.on_bottle_wine_changed(self.wine_combo.currentIndex())
+
+    def open_wine_manager(self):
+        """Download, update or delete Wine runners."""
+        from .dialogs import WineManagerDialog
+        dialog = WineManagerDialog(self.config, self)
+        dialog.exec_()
+        if dialog.changed:
+            # Keep this bottle on its current Wine; only the list changed.
+            self.refresh_wine_versions()
+
     def apply_windows_version(self):
         """Apply the selected Windows version."""
         if self.current_bottle:
-            version = self.winver_combo.currentText()
+            version = (self.winver_combo.currentData()
+                       or self.winver_combo.currentText())
             self.current_bottle.windows_version = version
             self.bottle_updated.emit(self.current_bottle.name)
             self._update_info_card(self.card_winver, "Windows 版本",
-                                   version)
+                                   windows_version_label(version))
 
     def apply_environment(self):
         """Apply the selected environment."""

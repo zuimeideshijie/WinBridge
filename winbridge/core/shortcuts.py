@@ -477,11 +477,29 @@ def merge(stored: list, discovered: list, hidden: list = None) -> tuple:
 # --------------------------------------------------------------------------
 # uninstall an application
 # --------------------------------------------------------------------------
+# Shared/system directories that must never be treated as one app's folder.
+_SYSTEM_TOP_LEVEL = {
+    "windows", "users", "programdata", "program files",
+    "program files (x86)", "system volume information", "$recycle.bin",
+    "recycler", "perflogs", "intel", "amd",
+}
+
+# Library-style folders that hold many programs. A program placed directly
+# in one of them cannot claim the whole folder.
+_SHARED_APP_FOLDERS = {
+    "games", "steamapps", "common", "gog games", "epic games",
+    "origin games", "ea games", "battle.net", "ubisoft game launcher",
+    "xboxgames", "modifiablewindowsapps", "downloads", "documents",
+    "desktop",
+}
+
+
 def _app_root(target: Path, bottle_path: Path):
     """The folder that belongs to one application, or None if unsure.
 
-    Only well-known install locations are accepted — never the shared root
-    of Program Files or the Windows directory — so uninstalling cannot take
+    Only well-known install locations and a single top-level application
+    folder are accepted — never the shared root of Program Files, the
+    Windows directory or the whole drive — so uninstalling cannot take
     unrelated programs with it.
     """
     drive_c = Path(bottle_path) / "drive_c"
@@ -490,17 +508,43 @@ def _app_root(target: Path, bottle_path: Path):
     except (ValueError, OSError):
         return None
     parts = rel.parts
+    if len(parts) < 2:
+        return None
 
-    if len(parts) >= 3 and parts[0] in ("Program Files", "Program Files (x86)"):
-        return drive_c / parts[0] / parts[1]
-    if len(parts) >= 4 and parts[0] == "ProgramData":
-        return drive_c.joinpath(*parts[:3])
-    if len(parts) >= 7 and parts[0] == "users" and parts[2] == "AppData":
-        if parts[3] == "Local" and parts[4] == "Programs":
-            return drive_c.joinpath(*parts[:6])
-        if parts[3] in ("Local", "Roaming"):
-            return drive_c.joinpath(*parts[:6])
-    return None
+    top = parts[0]
+    lowered = top.lower()
+
+    if top in ("Program Files", "Program Files (x86)"):
+        # <root>/<App>/anything.exe — the app owns <App>, never <root>.
+        return drive_c / top / parts[1] if len(parts) >= 3 else None
+
+    if top == "ProgramData":
+        if len(parts) >= 4:
+            return drive_c.joinpath(*parts[:3])      # ProgramData/<Vendor>/<App>
+        if len(parts) == 3:
+            return drive_c.joinpath(*parts[:2])      # ProgramData/<App>
+        return None                                  # a file in the shared root
+
+    if top == "users":
+        # users/<user>/AppData/{Local,Programs,Roaming}/<App>/…
+        if len(parts) >= 6 and parts[2] == "AppData":
+            if parts[3] == "Local" and parts[4] == "Programs":
+                return drive_c.joinpath(*parts[:6]) if len(parts) >= 7 else None
+            return drive_c.joinpath(*parts[:5])
+        return None                                  # Public/Desktop, profiles, …
+
+    if lowered in _SYSTEM_TOP_LEVEL:
+        return None
+
+    # Unknown layout: the executable's own folder is always app-specific and
+    # deleting it cannot take a sibling application with it.
+    if len(parts) >= 3:
+        return drive_c.joinpath(*parts[:-1])
+
+    # C:\<App>\app.exe — only when <App> is not a shared program library.
+    if lowered in _SHARED_APP_FOLDERS:
+        return None
+    return drive_c / parts[0]
 
 
 def _dir_size(path: Path) -> int:

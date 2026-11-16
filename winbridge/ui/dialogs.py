@@ -2,8 +2,9 @@
 
 import os
 import subprocess
+import threading
 from pathlib import Path
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QPixmap
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
@@ -13,11 +14,15 @@ from PyQt5.QtWidgets import (
     QMessageBox, QFrame, QStackedWidget, QSizePolicy,
     QProgressBar, QStatusBar, QListWidget, QListWidgetItem,
     QApplication, QSplitter, QAbstractItemView, QButtonGroup,
+    QFileDialog,
 )
 from ..core.config import Config
 from ..core.wine import Wine
-from ..core.bottle import ENVIRONMENT_LABELS
+from ..core.bottle import (ENVIRONMENT_LABELS, WINDOWS_VERSIONS,
+                           windows_version_label)
 from ..core.download import ComponentManager
+from ..core import registry
+from ..core.wine_runtimes import WineRuntimeManager, available_builds
 from ..core.sandbox import app_installed as sandbox_available
 
 
@@ -100,11 +105,11 @@ class CreateBottleDialog(QDialog):
         layout.addWidget(winver_label)
 
         self.windows_version_combo = QComboBox()
-        self.windows_version_combo.addItems([
-            "win11", "win10", "win81", "win8", "win7", "vista",
-            "win2003", "winxp", "win2k", "winme", "win98", "win95"
-        ])
-        self.windows_version_combo.setCurrentText("win10")
+        for version in WINDOWS_VERSIONS:
+            self.windows_version_combo.addItem(
+                windows_version_label(version), version)
+        index = self.windows_version_combo.findData("win10")
+        self.windows_version_combo.setCurrentIndex(index if index >= 0 else 0)
         layout.addWidget(self.windows_version_combo)
 
         # Wine Version
@@ -116,10 +121,6 @@ class CreateBottleDialog(QDialog):
         wine_ver_layout.setSpacing(10)
 
         self.wine_source_combo = QComboBox()
-        self.wine_source_combo.addItems([
-            "系统默认 Wine",
-            "自定义路径...",
-        ])
         self.wine_source_combo.currentIndexChanged.connect(self.on_wine_source_changed)
         wine_ver_layout.addWidget(self.wine_source_combo, 1)
 
@@ -134,11 +135,19 @@ class CreateBottleDialog(QDialog):
         self.btn_browse_wine.clicked.connect(self.browse_wine_path)
         wine_ver_layout.addWidget(self.btn_browse_wine)
 
+        self.btn_download_wine = QPushButton("管理 Wine…")
+        self.btn_download_wine.setObjectName("btnDefault")
+        self.btn_download_wine.setToolTip(
+            "下载、更新或删除 Wine 版本（Wine 11 / Soda / Proton 11 / Wine-GE）")
+        self.btn_download_wine.clicked.connect(self.open_wine_manager)
+        wine_ver_layout.addWidget(self.btn_download_wine)
+
         layout.addLayout(wine_ver_layout)
 
         self.wine_ver_hint = QLabel(f"当前: {self.wine.version}")
         self.wine_ver_hint.setObjectName("hint")
         layout.addWidget(self.wine_ver_hint)
+        self._fill_wine_sources()
 
         # Runtime: host Wine vs. flatpak sandbox (own Mesa/Vulkan)
         runtime_label = QLabel("运行环境")
@@ -211,11 +220,61 @@ class CreateBottleDialog(QDialog):
         self.bottle_name.textChanged.connect(
             lambda t: self.btn_create.setEnabled(bool(t.strip())))
 
+    def _fill_wine_sources(self, select_path: str = None):
+        """Populate the Wine selector: system, installed runners, custom."""
+        combo = getattr(self, "wine_source_combo", None)
+        if combo is None:
+            return
+        system_path = self.config.wine_path
+        system_exists = bool(system_path) and Path(system_path).exists()
+        if select_path is None:
+            if combo.count():
+                select_path = combo.currentData()
+            elif system_exists:
+                select_path = system_path
+        combo.blockSignals(True)
+        combo.clear()
+        if system_exists:
+            combo.addItem(f"系统默认 Wine（{self.wine.version}）", system_path)
+        for runner in WineRuntimeManager(self.config).installed():
+            suffix = f" {runner['version']}" if runner["version"] else ""
+            combo.addItem(f"{runner['label']}{suffix}", runner["wine_path"])
+        combo.addItem("自定义路径...", None)
+        index = combo.findData(select_path)
+        if index < 0:
+            # A deleted system Wine leaves the first runner (or Custom) as
+            # the useful default instead of an unusable path.
+            index = 0
+        combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+        self.on_wine_source_changed(combo.currentIndex())
+
+    def open_wine_manager(self):
+        """Download, update or delete Wine runners."""
+        dialog = WineManagerDialog(self.config, self)
+        dialog.exec_()
+        if dialog.changed:
+            runners = WineRuntimeManager(self.config).installed()
+            self._fill_wine_sources(
+                runners[0]["wine_path"] if runners else None)
+            if runners:
+                self.wine_ver_hint.setText(
+                    f"已选择: {runners[0]['label']} {runners[0]['version']}")
+
     def on_wine_source_changed(self, index: int):
         """Handle Wine source selection change."""
-        is_custom = index == 1
+        is_custom = self.wine_source_combo.currentData() is None
         self.wine_path_input.setVisible(is_custom)
         self.btn_browse_wine.setVisible(is_custom)
+        if is_custom:
+            self.wine_ver_hint.setText("选择 Wine 二进制文件")
+        else:
+            data = self.wine_source_combo.currentData()
+            if data == self.config.wine_path:
+                self.wine_ver_hint.setText(f"当前: {self.wine.version}")
+            else:
+                self.wine_ver_hint.setText(
+                    f"选择: {self.wine_source_combo.currentText()}")
 
     def browse_wine_path(self):
         """Browse for a custom Wine binary."""
@@ -235,9 +294,10 @@ class CreateBottleDialog(QDialog):
 
     def get_wine_path(self) -> str:
         """Get the selected Wine path."""
-        if self.wine_source_combo.currentIndex() == 1:
-            return self.wine_path_input.text().strip() or self.config.wine_path
-        return self.config.wine_path
+        data = self.wine_source_combo.currentData()
+        if data:
+            return data
+        return self.wine_path_input.text().strip() or self.config.wine_path
 
     def get_sandbox(self) -> str:
         """Runtime chosen for the new bottle: "host" or "flatpak"."""
@@ -414,6 +474,645 @@ class DLLOverrideDialog(QDialog):
         return self.dll_name.text().strip(), mode_map.get(self.mode_combo.currentText(), "native,builtin")
 
 
+class RegistryValueDialog(QDialog):
+    """Create or edit one registry value."""
+
+    def __init__(self, parent=None, name: str = "",
+                 type_name: str = "REG_SZ", data: str = "",
+                 editing: bool = False):
+        super().__init__(parent)
+        self.setWindowTitle("编辑注册表值" if editing else "新建注册表值")
+        self.setMinimumWidth(460)
+        self.setModal(True)
+        self.editing = editing
+        self.setup_ui(name, type_name, data)
+
+    def setup_ui(self, name: str, type_name: str, data: str):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(26, 22, 26, 22)
+
+        title = QLabel("编辑注册表值" if self.editing else "新建注册表值")
+        title.setObjectName("dialogTitle")
+        layout.addWidget(title)
+
+        form = QFormLayout()
+        form.setSpacing(10)
+
+        self.name_input = QLineEdit(name)
+        self.name_input.setPlaceholderText("留空表示默认值")
+        self.name_input.setReadOnly(self.editing)
+        name_label = QLabel("名称")
+        name_label.setObjectName("fieldLabel")
+        form.addRow(name_label, self.name_input)
+
+        self.type_combo = QComboBox()
+        for key in registry.REG_TYPES:
+            self.type_combo.addItem(registry.REG_TYPE_LABELS[key], key)
+        index = self.type_combo.findData(type_name)
+        if index >= 0:
+            self.type_combo.setCurrentIndex(index)
+        type_label = QLabel("类型")
+        type_label.setObjectName("fieldLabel")
+        form.addRow(type_label, self.type_combo)
+
+        self.data_edit = QTextEdit()
+        self.data_edit.setPlainText(data)
+        self.data_edit.setMaximumHeight(120)
+        data_label = QLabel("数据")
+        data_label.setObjectName("fieldLabel")
+        form.addRow(data_label, self.data_edit)
+
+        layout.addLayout(form)
+
+        hint = QLabel(
+            "DWORD/QWORD：十进制或 0x 十六进制；二进制：十六进制字节；"
+            "多字符串：每行一个。")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        btn_cancel = QPushButton("取消")
+        btn_cancel.setObjectName("btnDefault")
+        btn_cancel.clicked.connect(self.reject)
+        buttons.addWidget(btn_cancel)
+        buttons.addStretch()
+        btn_ok = QPushButton("确定")
+        btn_ok.setObjectName("btnPrimary")
+        btn_ok.clicked.connect(self.accept)
+        buttons.addWidget(btn_ok)
+        layout.addLayout(buttons)
+
+        self.data_edit.setFocus()
+
+    def get_result(self) -> tuple:
+        return (self.name_input.text().strip(),
+                self.type_combo.currentData(),
+                self.data_edit.toPlainText())
+
+
+class WineManagerDialog(QDialog):
+    """Manage installed Wine runtimes (install / delete / inspect)."""
+
+    def __init__(self, config: Config = None, parent=None):
+        super().__init__(parent)
+        self.config = config or Config()
+        self.manager = WineRuntimeManager(self.config)
+        self.changed = False
+        self._thread = None
+        self._cancel_event = None
+        self.setWindowTitle("Wine 版本管理")
+        self.setMinimumWidth(640)
+        self.setModal(True)
+        self.setup_ui()
+        self.refresh_state()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(26, 22, 26, 22)
+
+        title = QLabel("Wine 版本管理")
+        title.setObjectName("dialogTitle")
+        layout.addWidget(title)
+
+        hint = QLabel(
+            "管理已安装的 Wine 版本，或从镜像站下载新的版本。"
+            "容器可在配置页单独选择使用哪一个。")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        installed_label = QLabel("已安装的 Wine 版本")
+        installed_label.setObjectName("sectionTitle")
+        layout.addWidget(installed_label)
+
+        self.installed_table = QTableWidget(0, 3)
+        self.installed_table.setHorizontalHeaderLabels(["名称", "版本", "路径"])
+        self.installed_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeToContents)
+        self.installed_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeToContents)
+        self.installed_table.horizontalHeader().setStretchLastSection(True)
+        self.installed_table.verticalHeader().setVisible(False)
+        self.installed_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.installed_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.installed_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.installed_table.setMaximumHeight(160)
+        self.installed_table.itemSelectionChanged.connect(
+            self._update_delete_button)
+        layout.addWidget(self.installed_table)
+
+        installed_buttons = QHBoxLayout()
+        installed_buttons.setSpacing(8)
+        btn_refresh = QPushButton("刷新列表")
+        btn_refresh.setObjectName("btnDefault")
+        btn_refresh.clicked.connect(self.refresh_state)
+        installed_buttons.addWidget(btn_refresh)
+
+        self.btn_delete_wine = QPushButton("删除选中的 Wine 版本")
+        self.btn_delete_wine.setObjectName("btnDanger")
+        self.btn_delete_wine.setEnabled(False)
+        self.btn_delete_wine.clicked.connect(self.delete_selected)
+        installed_buttons.addWidget(self.btn_delete_wine)
+        installed_buttons.addStretch()
+        layout.addLayout(installed_buttons)
+
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setObjectName("detailSep")
+        layout.addWidget(separator)
+
+        install_label = QLabel("安装新版本")
+        install_label.setObjectName("sectionTitle")
+        layout.addWidget(install_label)
+
+        self.build_combo = QComboBox()
+        for build in available_builds():
+            self.build_combo.addItem(build["label"], build["id"])
+        self.build_combo.currentIndexChanged.connect(self._update_description)
+        layout.addWidget(self.build_combo)
+
+        self.description = QLabel("")
+        self.description.setObjectName("hint")
+        self.description.setWordWrap(True)
+        layout.addWidget(self.description)
+
+        self.progress = QProgressBar()
+        self.progress.setObjectName("progressLabeled")
+        self.progress.setVisible(False)
+        layout.addWidget(self.progress)
+
+        self.status = QLabel("")
+        self.status.setObjectName("muted")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        self.btn_close = QPushButton("关闭")
+        self.btn_close.setObjectName("btnDefault")
+        self.btn_close.clicked.connect(self.reject)
+        buttons.addWidget(self.btn_close)
+
+        self.btn_cancel = QPushButton("取消")
+        self.btn_cancel.setObjectName("btnDefault")
+        self.btn_cancel.setVisible(False)
+        self.btn_cancel.clicked.connect(self.cancel_install)
+        buttons.addWidget(self.btn_cancel)
+
+        buttons.addStretch()
+
+        self.btn_install = QPushButton("安装")
+        self.btn_install.setObjectName("btnPrimary")
+        self.btn_install.clicked.connect(self.install_selected)
+        buttons.addWidget(self.btn_install)
+        layout.addLayout(buttons)
+
+    def _installed_for(self, build_id: str) -> list:
+        return [runner for runner in self.manager.installed()
+                if runner["id"] == build_id]
+
+    def refresh_state(self):
+        self.refresh_installed()
+        self._update_description()
+
+    def refresh_installed(self):
+        """Rebuild the installed list, including the system Wine entry."""
+        self.installed_table.blockSignals(True)
+        try:
+            self.installed_table.setRowCount(0)
+            system = self.manager.system_wine()
+            if system["exists"]:
+                self._add_installed_row(
+                    "系统 Wine", system["version"] or "未知", system["path"],
+                    {"kind": "system", **system})
+            for runner in self.manager.installed():
+                self._add_installed_row(
+                    runner["label"], runner["version"] or "未知",
+                    runner["wine_path"], {"kind": "runner", **runner})
+        finally:
+            self.installed_table.blockSignals(False)
+        self._update_delete_button()
+
+    def _add_installed_row(self, name: str, version: str, path: str,
+                           payload: dict):
+        row = self.installed_table.rowCount()
+        self.installed_table.insertRow(row)
+        name_item = QTableWidgetItem(name)
+        name_item.setData(Qt.UserRole, payload)
+        self.installed_table.setItem(row, 0, name_item)
+        self.installed_table.setItem(row, 1, QTableWidgetItem(version))
+        path_item = QTableWidgetItem(path)
+        path_item.setToolTip(path)
+        self.installed_table.setItem(row, 2, path_item)
+
+    def _update_delete_button(self):
+        self.btn_delete_wine.setEnabled(
+            self.installed_table.currentRow() >= 0)
+
+    def _bottles_using(self, wine_path: str) -> list:
+        """Names of bottles whose saved Wine resolves to ``wine_path``."""
+        from ..core.bottle import BottleManager
+        wanted = os.path.realpath(wine_path or "")
+        names = []
+        for bottle in BottleManager(self.config).list_bottles():
+            try:
+                current = bottle.wine_path
+            except Exception:
+                continue
+            if os.path.realpath(current or "") == wanted:
+                names.append(bottle.name)
+        return names
+
+    @staticmethod
+    def _format_size(size: int) -> str:
+        value = float(size or 0)
+        for unit in ("B", "KB", "MB", "GB"):
+            if value < 1024 or unit == "GB":
+                return (f"{value:.0f} {unit}" if unit == "B"
+                        else f"{value:.1f} {unit}")
+            value /= 1024
+        return f"{value:.1f} GB"
+
+    def delete_selected(self):
+        row = self.installed_table.currentRow()
+        if row < 0:
+            return
+        item = self.installed_table.item(row, 0)
+        payload = item.data(Qt.UserRole) if item else None
+        if not payload:
+            return
+        if payload.get("kind") == "system":
+            self._delete_system_wine()
+        else:
+            self._delete_runner(payload)
+
+    def _delete_runner(self, runner: dict):
+        used = self._bottles_using(runner.get("wine_path", ""))
+        if used:
+            QMessageBox.warning(
+                self, "正在使用",
+                "以下容器正在使用这个 Wine 版本：\n"
+                + "\n".join(f"· {name}" for name in used)
+                + "\n\n请先在容器配置的「Wine 版本」里切换到其他版本，"
+                  "再删除。")
+            return
+        label = f"{runner['label']} {runner.get('version') or ''}".strip()
+        reply = QMessageBox.warning(
+            self, "删除 Wine 版本",
+            f"确定删除 {label} 吗？\n\n{runner.get('wine_path', '')}\n\n"
+            "将删除该运行时目录内的所有文件，不可撤销。\n"
+            "请先确保没有程序正在使用它。",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        ok, message = self.manager.delete_runner(runner)
+        if not ok:
+            QMessageBox.warning(self, "删除失败", message)
+            return
+        self.changed = True
+        self.status.setText(message)
+        self.refresh_state()
+
+    def _delete_system_wine(self):
+        plan = self.manager.system_wine_removal_plan()
+        if not plan["removable"]:
+            QMessageBox.warning(self, "无法删除系统 Wine",
+                                plan["reason"] or "请手动处理")
+            return
+
+        used = (self._bottles_using(plan["path"])
+                or self._bottles_using(plan["target"]))
+
+        lines = [f"程序：{plan['path']}"]
+        if plan["packages"]:
+            lines.append("将使用系统包管理器卸载："
+                         + ", ".join(plan["packages"]))
+        else:
+            lines.append(f"运行时目录：{plan['root']}"
+                         f"（{self._format_size(plan['size'])}）")
+            if plan["links"]:
+                lines.append("启动器：" + "、".join(plan["links"]))
+        lines.append("")
+        lines.append("需要管理员权限，删除后不可撤销。"
+                     "请先确保没有程序正在使用系统 Wine。")
+
+        reply = QMessageBox.warning(
+            self, "删除系统 Wine",
+            "确定要删除系统 Wine 吗？\n\n" + "\n".join(lines),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+
+        if used:
+            runners = self.manager.installed()
+            if not runners:
+                QMessageBox.warning(
+                    self, "正在使用",
+                    "以下容器正在使用系统 Wine：\n"
+                    + "\n".join(f"· {name}" for name in used)
+                    + "\n\n请先在「安装新版本」里安装其他 Wine 版本，"
+                      "再把容器切换过去，然后删除系统 Wine。")
+                return
+            target = runners[0]
+            target_label = (f"{target['label']} "
+                            f"{target.get('version') or ''}").strip()
+            switch = QMessageBox.question(
+                self, "切换容器使用的 Wine",
+                "以下容器正在使用系统 Wine：\n"
+                + "\n".join(f"· {name}" for name in used)
+                + f"\n\n删除前需要先切换到「{target_label}」，是否继续？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if switch != QMessageBox.Yes:
+                return
+            from ..core.bottle import BottleManager
+            bottle_manager = BottleManager(self.config)
+            for name in used:
+                bottle = bottle_manager.get_bottle(name)
+                if bottle is not None:
+                    bottle.wine_path = target["wine_path"]
+            self.changed = True
+
+        ok, message = self.manager.remove_system_wine()
+        if not ok:
+            QMessageBox.warning(self, "删除失败", message)
+            return
+        self.changed = True
+        self.status.setText(message)
+        self.refresh_state()
+        QMessageBox.information(
+            self, "已删除",
+            message + "\n\n系统默认 Wine 已不可用；请安装或选择其他 Wine "
+                      "版本后再启动容器。")
+
+    def _update_description(self):
+        build_id = self.build_combo.currentData()
+        installed = self._installed_for(build_id)
+        build = next((item for item in available_builds()
+                      if item["id"] == build_id), {})
+        text = build.get("description", "")
+        if installed:
+            labels = ", ".join(
+                f"{item['version'] or '已安装'}" for item in installed)
+            text += f"\n已安装：{labels}。再次安装会覆盖同名版本。"
+            self.btn_install.setText("重新安装")
+        else:
+            self.btn_install.setText("安装")
+        self.description.setText(text)
+
+    def install_selected(self):
+        build_id = self.build_combo.currentData()
+        if not build_id or (self._thread and self._thread.isRunning()):
+            return
+        self.progress.setVisible(True)
+        self.progress.setValue(0)
+        self.btn_install.setEnabled(False)
+        self.build_combo.setEnabled(False)
+        self.btn_close.setEnabled(False)
+        self.btn_cancel.setVisible(True)
+        self.btn_cancel.setEnabled(True)
+        self._cancel_event = threading.Event()
+
+        class InstallThread(QThread):
+            progress = pyqtSignal(int, str)
+            finished_sig = pyqtSignal(bool, str)
+
+            def __init__(self, manager, build_id, cancel_event):
+                super().__init__()
+                self._manager = manager
+                self._build_id = build_id
+                self._cancel_event = cancel_event
+
+            def run(self):
+                try:
+                    ok, message = self._manager.install(
+                        self._build_id, self.progress.emit,
+                        self._cancel_event)
+                except Exception as error:  # noqa: BLE001 - shown in dialog
+                    ok, message = False, str(error)
+                self.finished_sig.emit(ok, message)
+
+        self._thread = InstallThread(
+            self.manager, build_id, self._cancel_event)
+        self._thread.progress.connect(self._on_progress)
+        self._thread.finished_sig.connect(self._on_finished)
+        self._thread.start()
+
+    def _on_progress(self, percent: int, message: str):
+        self.progress.setValue(percent)
+        self.status.setText(message)
+
+    def _on_finished(self, ok: bool, message: str):
+        self.progress.setVisible(False)
+        self.btn_install.setEnabled(True)
+        self.build_combo.setEnabled(True)
+        self.btn_close.setEnabled(True)
+        self.btn_cancel.setVisible(False)
+        if ok:
+            self.changed = True
+            self.status.setText(f"已安装：{message}")
+            self.refresh_state()
+        elif getattr(self, "_cancel_event", None) and self._cancel_event.is_set():
+            self.status.setText("已取消")
+        else:
+            self.status.setText(f"安装失败：{message}")
+            QMessageBox.warning(self, "安装失败", message)
+        self._thread = None
+
+    def cancel_install(self):
+        if self._cancel_event:
+            self._cancel_event.set()
+            self.btn_cancel.setEnabled(False)
+            self.status.setText("正在取消...")
+
+    def closeEvent(self, event):
+        if self._thread and self._thread.isRunning():
+            QMessageBox.information(
+                self, "正在安装",
+                "下载/解压仍在进行，请先点击「取消」并等待完成后再关闭。")
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+
+class WineUpdateDialog(QDialog):
+    """Prompt for new Wine runner releases and install them in one go."""
+
+    def __init__(self, config: Config = None, updates: list = None, parent=None):
+        super().__init__(parent)
+        self.config = config or Config()
+        self.manager = WineRuntimeManager(self.config)
+        self.updates = updates or []
+        self.changed = False
+        self._finished = False
+        self._thread = None
+        self._cancel_event = None
+        self.setWindowTitle("Wine 运行时更新")
+        self.setMinimumWidth(520)
+        self.setModal(True)
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(26, 22, 26, 22)
+
+        title = QLabel("Wine 运行时更新")
+        title.setObjectName("dialogTitle")
+        layout.addWidget(title)
+
+        lines = ["检测到以下新版本："]
+        for update in self.updates:
+            lines.append(
+                f"{update['label']}：{update['version']} → "
+                f"{update['latest_version']}")
+        info = QLabel("\n".join(lines))
+        info.setObjectName("fieldLabel")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        hint = QLabel("更新会重新下载并覆盖对应版本，容器里已保存的 Wine 选择不变。")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self.progress = QProgressBar()
+        self.progress.setObjectName("progressLabeled")
+        self.progress.setVisible(False)
+        layout.addWidget(self.progress)
+
+        self.status = QLabel("")
+        self.status.setObjectName("muted")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        self.btn_later = QPushButton("稍后")
+        self.btn_later.setObjectName("btnDefault")
+        self.btn_later.clicked.connect(self.reject)
+        buttons.addWidget(self.btn_later)
+
+        self.btn_cancel = QPushButton("取消")
+        self.btn_cancel.setObjectName("btnDefault")
+        self.btn_cancel.setVisible(False)
+        self.btn_cancel.clicked.connect(self.cancel_updates)
+        buttons.addWidget(self.btn_cancel)
+
+        buttons.addStretch()
+
+        self.btn_update = QPushButton("全部更新")
+        self.btn_update.setObjectName("btnPrimary")
+        self.btn_update.clicked.connect(self._on_primary)
+        buttons.addWidget(self.btn_update)
+        layout.addLayout(buttons)
+
+    def _on_primary(self):
+        if self._finished:
+            self.accept()
+        else:
+            self.install_updates()
+
+    def install_updates(self):
+        if not self.updates or (self._thread and self._thread.isRunning()):
+            return
+        self.progress.setVisible(True)
+        self.progress.setValue(0)
+        self.status.setText("准备更新...")
+        self.btn_update.setEnabled(False)
+        self.btn_later.setEnabled(False)
+        self.btn_cancel.setVisible(True)
+        self.btn_cancel.setEnabled(True)
+        self._cancel_event = threading.Event()
+
+        updates = list(self.updates)
+
+        class UpdateThread(QThread):
+            progress = pyqtSignal(int, str)
+            finished_sig = pyqtSignal(bool, str)   # ok, message
+
+            def __init__(self, manager, updates, cancel_event):
+                super().__init__()
+                self._manager = manager
+                self._updates = updates
+                self._cancel_event = cancel_event
+
+            def run(self):
+                failed = []
+                completed = 0
+                total = len(self._updates)
+                for index, update in enumerate(self._updates):
+                    if self._cancel_event.is_set():
+                        break
+                    self.progress.emit(
+                        int(index * 100 / total),
+                        f"正在更新 {update['label']} → "
+                        f"{update['latest_version']}...")
+
+                    def on_progress(value, _total, message=None):
+                        overall = int((index * 100 + value) / total)
+                        self.progress.emit(overall, message or "")
+
+                    ok, error = self._manager.install(
+                        update["id"], on_progress, self._cancel_event)
+                    if ok:
+                        completed += 1
+                    elif self._cancel_event.is_set():
+                        break
+                    else:
+                        failed.append(f"{update['label']}: {error[:80]}")
+
+                if self._cancel_event.is_set():
+                    self.finished_sig.emit(
+                        completed > 0, f"已取消，已完成 {completed} 项更新")
+                elif failed:
+                    self.finished_sig.emit(
+                        completed > 0, "部分更新失败：" + "；".join(failed))
+                else:
+                    self.finished_sig.emit(True, "Wine 运行时更新完成")
+
+        self._thread = UpdateThread(
+            self.manager, updates, self._cancel_event)
+        self._thread.progress.connect(self._on_progress)
+        self._thread.finished_sig.connect(self._on_finished)
+        self._thread.start()
+
+    def _on_progress(self, percent: int, message: str):
+        self.progress.setValue(percent)
+        if message:
+            self.status.setText(message)
+
+    def _on_finished(self, ok: bool, message: str):
+        self.progress.setVisible(False)
+        self.status.setText(message)
+        self.btn_update.setEnabled(True)
+        self.btn_update.setText("关闭")
+        self.btn_later.setVisible(False)
+        self.btn_cancel.setVisible(False)
+        self._finished = True
+        self._thread = None
+        if ok:
+            self.changed = True
+
+    def cancel_updates(self):
+        if self._cancel_event:
+            self._cancel_event.set()
+            self.btn_cancel.setEnabled(False)
+            self.status.setText("正在取消...")
+
+    def closeEvent(self, event):
+        if self._thread and self._thread.isRunning():
+            QMessageBox.information(
+                self, "正在更新",
+                "更新仍在进行，请先点击「取消」并等待完成后再关闭。")
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+
 class TaskManagerDialog(QDialog):
     """Windows-style Task Manager for Wine processes — Windows native style."""
 
@@ -492,23 +1191,48 @@ class TaskManagerDialog(QDialog):
         self.process_table.itemSelectionChanged.connect(
             lambda: self.btn_end.setEnabled(bool(self.process_table.currentRow() >= 0)))
 
+    def _selected_pid(self) -> str:
+        """PID of the highlighted row ("" when nothing is selected)."""
+        row = self.process_table.currentRow()
+        if row < 0:
+            return ""
+        item = self.process_table.item(row, 1)
+        return item.text() if item else ""
+
     def refresh_processes(self):
-        """Refresh the process list."""
+        """Refresh the process list without losing the current selection."""
+        selected_pid = self._selected_pid()
+        scroll = self.process_table.verticalScrollBar().value()
         processes = self.wine.list_processes(self.bottle_path)
-        self.process_table.setRowCount(0)
 
-        for proc in processes:
-            row = self.process_table.rowCount()
-            self.process_table.insertRow(row)
+        # Clearing the table fires selectionChanged, which used to un-highlight
+        # the process the user picked every three seconds.
+        self.process_table.blockSignals(True)
+        try:
+            self.process_table.setRowCount(0)
+            for proc in processes:
+                row = self.process_table.rowCount()
+                self.process_table.insertRow(row)
 
-            name = proc["name"][:40] if len(proc["name"]) > 40 else proc["name"]
-            self.process_table.setItem(row, 0, QTableWidgetItem(name))
-            self.process_table.setItem(row, 1, QTableWidgetItem(proc["pid"]))
-            self.process_table.setItem(row, 2, QTableWidgetItem(proc["cpu"]))
-            self.process_table.setItem(row, 3, QTableWidgetItem(proc["memory"]))
-            self.process_table.setItem(row, 4, QTableWidgetItem(proc["status"]))
-            self.process_table.setItem(row, 5, QTableWidgetItem(proc["user"]))
+                name = proc["name"][:40] if len(proc["name"]) > 40 else proc["name"]
+                self.process_table.setItem(row, 0, QTableWidgetItem(name))
+                self.process_table.setItem(row, 1, QTableWidgetItem(proc["pid"]))
+                self.process_table.setItem(row, 2, QTableWidgetItem(proc["cpu"]))
+                self.process_table.setItem(row, 3, QTableWidgetItem(proc["memory"]))
+                self.process_table.setItem(row, 4, QTableWidgetItem(proc["status"]))
+                self.process_table.setItem(row, 5, QTableWidgetItem(proc["user"]))
+        finally:
+            self.process_table.blockSignals(False)
 
+        if selected_pid:
+            for row in range(self.process_table.rowCount()):
+                item = self.process_table.item(row, 1)
+                if item and item.text() == selected_pid:
+                    self.process_table.selectRow(row)
+                    break
+
+        self.process_table.verticalScrollBar().setValue(scroll)
+        self.btn_end.setEnabled(bool(self.process_table.currentRow() >= 0))
         self.status_label.setText(f"进程数: {len(processes)}")
 
     def kill_selected_process(self):
@@ -533,15 +1257,15 @@ class TaskManagerDialog(QDialog):
                 QMessageBox.warning(self, "错误", f"无法结束进程 {pid}")
 
     def open_wine_taskmgr(self):
-        """Open the built-in Wine task manager."""
+        """Open Wine's own task manager in this bottle (sandbox aware)."""
         try:
-            cmd = self.wine.wine_path.replace("wine", "wine-taskmgr")
-            subprocess.Popen([cmd], env=os.environ.copy())
-        except Exception:
-            subprocess.Popen(
-                [self.wine.wine_path, "taskmgr"],
-                env=os.environ.copy()
-            )
+            if self.bottle_path:
+                self.wine.run(self.bottle_path, "taskmgr", wait=False)
+                return
+            subprocess.Popen([self.wine.wine_path, "taskmgr"],
+                             env=os.environ.copy())
+        except Exception as error:  # noqa: BLE001 - surfaced in the dialog
+            QMessageBox.warning(self, "无法启动", str(error))
 
     def closeEvent(self, event):
         self.timer.stop()

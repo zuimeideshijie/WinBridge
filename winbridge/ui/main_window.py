@@ -3,7 +3,7 @@
 import os
 import threading
 from pathlib import Path
-from PyQt5.QtCore import Qt, QSize, QTimer
+from PyQt5.QtCore import Qt, QSize, QTimer, QThread, pyqtSignal
 from PyQt5.QtGui import QIcon, QFont, QPixmap
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -13,13 +13,19 @@ from PyQt5.QtWidgets import (
     QAction, QActionGroup, QSizePolicy, QSpacerItem,
 )
 from ..core.config import Config
-from ..core.bottle import Bottle, BottleManager, environment_key, environment_label
+from ..core.bottle import (Bottle, BottleManager, environment_key,
+                           environment_label, windows_version_label)
 from ..core.wine import Wine
 from ..core.download import ComponentManager, COMPONENT_MAP
 from ..core.theme import ThemeManager
-from ..core.wine_updater import WineUpdater
+from ..core.wine_runtimes import WineRuntimeManager
 from .bottle_detail import BottleDetailWidget
-from .dialogs import CreateBottleDialog, FirstRunDialog, TaskManagerDialog
+from .dialogs import (CreateBottleDialog, FirstRunDialog, TaskManagerDialog,
+                      WineManagerDialog, WineUpdateDialog)
+
+# Fonts and the .NET runtime cover the text rendering / launcher failures
+# that make a fresh bottle look broken, so they are checked on startup.
+REQUIRED_COMPONENTS = ("corefonts", "cjkfonts", "allfonts", "dotnet48")
 
 # Environment → chip role (label text comes from core.bottle)
 ENV_CHIP_ROLES = {
@@ -60,7 +66,7 @@ class BottleListItem(QWidget):
 
         details_text = " · ".join([
             self.bottle.arch.replace("win", "Win"),
-            self.bottle.windows_version,
+            windows_version_label(self.bottle.windows_version),
         ])
         detail_label = QLabel(details_text)
         detail_label.setObjectName("itemDetail")
@@ -300,6 +306,10 @@ class MainWindow(QMainWindow):
         taskmgr_action.triggered.connect(self.open_task_manager)
         tools_menu.addAction(taskmgr_action)
 
+        install_wine_action = QAction("Wine 版本管理…", self)
+        install_wine_action.triggered.connect(self.open_wine_manager)
+        tools_menu.addAction(install_wine_action)
+
         tools_menu.addSeparator()
         cfg_action = QAction("Wine 配置 (winecfg)", self)
         cfg_action.triggered.connect(self.open_winecfg)
@@ -398,7 +408,8 @@ class MainWindow(QMainWindow):
             name = dialog.bottle_name.text().strip()
             arch = "win64" if dialog.arch_64.isChecked() else "win32"
             env = dialog.environment_combo.currentData() or "custom"
-            win_ver = dialog.windows_version_combo.currentText()
+            win_ver = (dialog.windows_version_combo.currentData()
+                       or dialog.windows_version_combo.currentText())
             desc = dialog.description.toPlainText().strip()
             wine_path = dialog.get_wine_path()
             sandbox = dialog.get_sandbox()
@@ -479,15 +490,18 @@ class MainWindow(QMainWindow):
         if current:
             name = current.data(Qt.UserRole)
         bottle = self.bottle_manager.get_bottle(name) if name else None
-        if bottle and bottle.sandbox == "flatpak":
-            QMessageBox.information(
-                self, "任务管理器",
-                "该容器运行在 flatpak 沙箱中，沙箱内的进程对宿主不可见。\n"
-                "请在容器「运行环境」里切回宿主机后查看。")
-            return
-        bottle_path = str(self.config.bottles_dir / name) if name else None
-        dialog = TaskManagerDialog(self.wine, bottle_path, self)
+        bottle_path = str(bottle.path) if bottle else None
+        wine = bottle.wine if bottle else self.wine
+        dialog = TaskManagerDialog(wine, bottle_path, self)
         dialog.show()
+
+    def open_wine_manager(self):
+        """Manage (install / delete) Wine runtimes from the mirror chain."""
+        dialog = WineManagerDialog(self.config, self)
+        dialog.exec_()
+        if dialog.changed:
+            self.detail_page.refresh_wine_versions()
+            self.status_bar.showMessage("Wine 运行时列表已更新")
 
     def show_first_run(self):
         """Show first run dialog."""
@@ -498,26 +512,141 @@ class MainWindow(QMainWindow):
                 self.download_base_files()
 
     def check_components_completeness(self):
-        """Check if the first bottle has components installed; if not, prompt."""
-        bottles = self.bottle_manager.list_bottles()
-        if not bottles:
+        """Prompt only when the current bottle lacks fonts or .NET Framework.
+
+        The old check fired whenever fewer than three components of *any*
+        kind were recorded, which both missed real gaps (a bottle with three
+        unrelated components) and nagged about bottles that already had the
+        important ones.
+        """
+        current = self.bottle_list.currentItem()
+        name = current.data(Qt.UserRole) if current else ""
+        bottle = (self.bottle_manager.get_bottle(name) if name
+                  else None)
+        if bottle is None:
+            bottles = self.bottle_manager.list_bottles()
+            bottle = bottles[0] if bottles else None
+        if bottle is None:
             return
-        bottle = bottles[0]
-        if len(bottle.installed_components) < 3:
-            reply = QMessageBox.question(
+
+        needed = [component for component in REQUIRED_COMPONENTS
+                  if component not in bottle.installed_components]
+        if not needed:
+            return
+
+        labels = "、".join(COMPONENT_MAP.get(component, {}).get("label",
+                                                               component)
+                          for component in needed)
+        if bottle.sandbox == "flatpak":
+            # winetricks/cabextract live on the host; the sandbox runtime has
+            # no toolchain and installing here would spawn a second
+            # wineserver, so explain instead of starting four failed jobs.
+            QMessageBox.information(
                 self, "组件检测",
-                f"容器「{bottle.name}」尚未安装基础组件。\n"
-                "是否现在安装？（推荐安装 vcrun、dotnet 等）",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
-            )
-            if reply == QMessageBox.Yes:
-                for i in range(self.bottle_list.count()):
-                    item = self.bottle_list.item(i)
-                    if item.data(Qt.UserRole) == bottle.name:
-                        self.bottle_list.setCurrentItem(item)
-                        self.on_bottle_selected(item)
+                f"容器「{bottle.name}」缺少：{labels}\n\n"
+                "该容器运行在 flatpak 沙箱中，组件需要在容器「运行环境」"
+                "切换到「宿主机」后安装，装完可以再切回沙箱。")
+            return
+
+        reply = QMessageBox.question(
+            self, "组件检测",
+            f"容器「{bottle.name}」缺少：{labels}\n\n"
+            "是否现在安装这些组件？\n"
+            "（.NET Framework 4.8 安装时间较长，可稍后继续使用其他功能）",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+        )
+        if reply == QMessageBox.Yes:
+            self.install_missing_components([(bottle, needed)])
+
+    def install_missing_components(self, missing: list):
+        """Install the recommended components for each listed bottle."""
+        from PyQt5.QtCore import QThread, pyqtSignal
+
+        tasks = []
+        for bottle, names in missing:
+            for name in names:
+                info = COMPONENT_MAP.get(name)
+                if info:
+                    tasks.append((bottle, name, info))
+        if not tasks:
+            return
+
+        class MissingInstallThread(QThread):
+            progress = pyqtSignal(int, int)
+            status = pyqtSignal(str)
+            finished_sig = pyqtSignal(bool, bool)   # ok, cancelled
+
+            def __init__(self, manager, tasks, cancel_event):
+                super().__init__()
+                self._manager = manager
+                self._tasks = tasks
+                self._cancel_event = cancel_event
+                self._failed = []
+                self._cancelled = False
+
+            def run(self):
+                total = len(self._tasks)
+                for index, (bottle, name, info) in enumerate(self._tasks):
+                    if self._cancel_event.is_set():
+                        self._cancelled = True
                         break
-                self.download_base_files()
+                    self.progress.emit(int(index * 100 / total), 100)
+                    self.status.emit(
+                        f"正在为「{bottle.name}」安装 {info['label']}...")
+
+                    def on_progress(value, _total, message=None):
+                        self.progress.emit(value, _total)
+                        if message:
+                            self.status.emit(message)
+
+                    ok, error_log, overrides, files = self._manager.install(
+                        name, str(bottle.path), on_progress,
+                        cancel_event=self._cancel_event)
+                    if ok:
+                        bottle.add_component(name)
+                        bottle.set_component_record(
+                            name, files or [], overrides or {})
+                        for dll, mode in (overrides or {}).items():
+                            bottle.set_dll_override(dll, mode)
+                        self.status.emit(
+                            f"「{bottle.name}」的 {info['label']} 安装完成")
+                    elif self._cancel_event.is_set():
+                        self._cancelled = True
+                        break
+                    else:
+                        self._failed.append(f"{bottle.name}/{name}")
+                        self.status.emit(
+                            f"{info['label']} 安装失败: "
+                            f"{(error_log or '无详细输出')[:120]}")
+                if not self._cancelled:
+                    self.progress.emit(100, 100)
+                self.finished_sig.emit(not self._failed, self._cancelled)
+
+        self._base_cancel_event = threading.Event()
+        self._missing_thread = MissingInstallThread(
+            self.component_manager, tasks, self._base_cancel_event)
+        self._missing_thread.progress.connect(self.progress_bar.setValue)
+        self._missing_thread.status.connect(self.status_bar.showMessage)
+        self._missing_thread.finished_sig.connect(
+            self.on_missing_components_finished)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
+        self.cancel_base_btn.setEnabled(True)
+        self.cancel_base_btn.setVisible(True)
+        self._missing_thread.start()
+
+    def on_missing_components_finished(self, ok: bool, cancelled: bool):
+        self.progress_bar.setVisible(False)
+        self.cancel_base_btn.setVisible(False)
+        self.cancel_base_btn.setEnabled(True)
+        if self.detail_page.current_bottle:
+            self.detail_page.refresh_components()
+        if cancelled:
+            self.status_bar.showMessage("已取消组件安装")
+        elif ok:
+            self.status_bar.showMessage("推荐组件安装完成")
+        else:
+            self.status_bar.showMessage("部分推荐组件安装失败，可在容器组件页重试")
 
     def download_base_files(self):
         """Download base files into the currently selected bottle."""
@@ -656,7 +785,7 @@ class MainWindow(QMainWindow):
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
-        version = QLabel("版本 1.2.5 · Wine 容器管理器")
+        version = QLabel("版本 1.3 · Wine 容器管理器")
         version.setObjectName("muted")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
@@ -718,110 +847,46 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"主题：{self.theme_manager.palette['name']}")
 
     def check_wine_version(self):
-        """Check Wine version and prompt for update if available."""
-        self.updater = WineUpdater(parent=self)
-        self.updater.version_checked.connect(self._on_wine_version_checked)
-        self.updater.check_version()
-        self.status_bar.showMessage("正在检查 Wine 版本...")
+        """Check installed Wine runners for newer upstream releases.
 
-    def _on_wine_version_checked(self, local: str, remote: str):
-        """Handle Wine version check result."""
-        if not local:
-            self.status_bar.showMessage("Wine: 无法检测本地版本")
+        Runs in a background thread: each installed runner needs one GitHub
+        API query. Nothing pops up when there is no runner installed or when
+        everything is already current.
+        """
+        running = getattr(self, "_update_check_thread", None)
+        if running and running.isRunning():
             return
+        self.status_bar.showMessage("正在检查 Wine 运行时更新...")
+        manager = WineRuntimeManager(self.config)
 
-        self.status_bar.showMessage(f"Wine: {local}")
+        class UpdateCheckThread(QThread):
+            finished_sig = pyqtSignal(list)
 
-        if not remote:
-            return  # Can't check remote, skip
+            def __init__(self, manager):
+                super().__init__()
+                self._manager = manager
 
-        if local == remote:
-            return  # Already up to date
+            def run(self):
+                try:
+                    updates = self._manager.check_updates()
+                except Exception:  # noqa: BLE001 - offline must not break startup
+                    updates = []
+                self.finished_sig.emit(updates)
 
-        # Newer version available — prompt user
-        self._show_wine_update_dialog(local, remote)
+        self._update_check_thread = UpdateCheckThread(manager)
+        self._update_check_thread.finished_sig.connect(
+            self._on_wine_updates_checked)
+        self._update_check_thread.start()
 
-    def _show_wine_update_dialog(self, local: str, remote: str):
-        """Show a dialog asking if the user wants to update Wine."""
-        from PyQt5.QtWidgets import (
-            QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-            QPushButton, QProgressBar, QFrame,
-        )
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Wine 更新可用")
-        dialog.setMinimumWidth(460)
-        dialog.setModal(True)
-
-        layout = QVBoxLayout(dialog)
-        layout.setSpacing(12)
-        layout.setContentsMargins(26, 22, 26, 22)
-
-        title = QLabel("Wine 新版本可用")
-        title.setObjectName("dialogTitle")
-        layout.addWidget(title)
-
-        info = QLabel(
-            f"本地版本　{local}\n"
-            f"最新版本　{remote}\n\n"
-            "是否从 GitCode 下载最新的 Wine 源码？"
-        )
-        info.setObjectName("fieldLabel")
-        layout.addWidget(info)
-
-        # Progress
-        self._update_progress = QProgressBar()
-        self._update_progress.setObjectName("progressLabeled")
-        self._update_progress.setVisible(False)
-        layout.addWidget(self._update_progress)
-
-        self._update_status = QLabel("")
-        self._update_status.setObjectName("muted")
-        self._update_status.setVisible(False)
-        layout.addWidget(self._update_status)
-
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(8)
-
-        btn_skip = QPushButton("稍后再说")
-        btn_skip.setObjectName("btnDefault")
-        btn_skip.clicked.connect(dialog.reject)
-        btn_layout.addWidget(btn_skip)
-
-        btn_layout.addStretch()
-
-        btn_update = QPushButton("立即更新")
-        btn_update.setObjectName("btnPrimary")
-        btn_update.clicked.connect(lambda: self._start_wine_update(
-            dialog, btn_update, btn_skip))
-        btn_layout.addWidget(btn_update)
-
-        layout.addLayout(btn_layout)
+    def _on_wine_updates_checked(self, updates: list):
+        if not updates:
+            self.status_bar.showMessage("Wine 运行时已是最新")
+            return
+        summary = "、".join(
+            f"{item['label']} {item['latest_version']}" for item in updates)
+        self.status_bar.showMessage(f"Wine 运行时可更新：{summary}")
+        dialog = WineUpdateDialog(self.config, updates, self)
         dialog.exec_()
-
-    def _start_wine_update(self, dialog, btn_update, btn_skip):
-        """Start the Wine update process."""
-        btn_update.setEnabled(False)
-        btn_skip.setEnabled(False)
-        self._update_progress.setVisible(True)
-        self._update_status.setVisible(True)
-
-        self.updater.progress.connect(self._on_update_progress)
-        self.updater.update_finished.connect(
-            lambda ok, msg: self._on_update_finished(ok, msg, dialog))
-        self.updater.clone_wine()
-
-    def _on_update_progress(self, message: str, percent: int):
-        """Handle update progress."""
-        self._update_progress.setValue(percent)
-        self._update_status.setText(message)
-
-    def _on_update_finished(self, success: bool, message: str, dialog):
-        """Handle update completion."""
-        self._update_status.setText(message)
-        if success:
-            self._update_progress.setValue(100)
-            self.status_bar.showMessage("Wine 源码已更新，请重新编译。")
-        else:
-            self.status_bar.showMessage(f"Wine 更新失败: {message}")
+        if dialog.changed:
+            self.detail_page.refresh_wine_versions()
+            self.status_bar.showMessage("Wine 运行时已更新")
