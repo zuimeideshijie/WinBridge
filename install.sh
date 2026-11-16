@@ -99,10 +99,13 @@ download() {
 }
 
 log "检查源: $BASE_URL"
-download "$BASE_URL/dists/stable/Release" "$TMP_DIR/Release" \
-    || die "无法读取仓库 Release，请检查网络或 --base 地址"
-grep -q '^Suite: stable' "$TMP_DIR/Release" \
-    || die "Release 文件格式不对，源地址可能不是 WinBridge APT 仓库"
+# Flat archive: <base>/Packages is the only index we depend on, so a stale
+# CDN copy of Release can never break the hash check (Gitee caches each path
+# separately — that mismatch was the "Hash 校验和不符" failure).
+download "$BASE_URL/Packages" "$TMP_DIR/Packages" \
+    || die "无法读取仓库 Packages，请检查网络或 --base 地址"
+grep -q '^Package: winbridge' "$TMP_DIR/Packages" \
+    || die "Packages 文件格式不对，源地址可能不是 WinBridge APT 仓库"
 
 OLD_VERSION=$(dpkg-query -W -f='${Version}' winbridge 2>/dev/null || true)
 if [ -n "$OLD_VERSION" ]; then
@@ -133,9 +136,9 @@ else
 fi
 
 if [ "$SIGNED" -eq 1 ]; then
-    SOURCE_LINE="deb [signed-by=$KEYRING] $BASE_URL stable main"
+    SOURCE_LINE="deb [signed-by=$KEYRING] $BASE_URL ./"
 else
-    SOURCE_LINE="deb [trusted=yes] $BASE_URL stable main"
+    SOURCE_LINE="deb [trusted=yes] $BASE_URL ./"
 fi
 
 printf '%s\n' "$SOURCE_LINE" | $SUDO tee "$SOURCE_FILE" >/dev/null
@@ -147,7 +150,9 @@ log "更新 APT 索引..."
 if ! $SUDO apt-get update \
         -o Dir::Etc::sourcelist="$SOURCE_FILE" \
         -o Dir::Etc::sourceparts="-" \
-        -o APT::Get::List-Cleanup="0"; then
+        -o APT::Get::List-Cleanup="0" \
+        -o Acquire::http::No-Cache=true \
+        -o Acquire::https::No-Cache=true; then
     die "apt-get update 失败，请检查网络、代理或 $SOURCE_FILE"
 fi
 
